@@ -1,0 +1,20 @@
+{
+  "group": "medium",
+  "prompts": [
+    {
+      "id": "medium-001",
+      "system": "You are a systems engineer helping evaluate local LLM performance. Answer clearly with short sections.",
+      "user": "Compare TTFT, prefill, and decode as separate bottlenecks in a local LLM runtime, and explain what each metric tells us."
+    },
+    {
+      "id": "medium-002",
+      "system": "You are a systems engineer helping evaluate local LLM performance. Answer clearly with short sections.",
+      "user": "A local LLM app on Apple Silicon feels fast on the first reply but slows down over multiple turns. List the likely causes and rank them."
+    },
+    {
+      "id": "medium-003",
+      "system": "You are a systems engineer helping evaluate local LLM performance. Answer clearly with short sections.",
+      "user": "Describe a practical benchmark setup for comparing two local LLM runtimes on the same Mac without mixing cold-start and warm-run results."
+    }
+  ]
+}

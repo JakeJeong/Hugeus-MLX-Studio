@@ -1,0 +1,12 @@
+.DS_Store
+.venv/
+.playwright-cli/
+.mlx-studio-settings.json
+
+__pycache__/
+*.py[cod]
+
+benchmark/results/*.jsonl
+
+vscode-extension/.claude/
+vscode-extension/node_modules/

@@ -1,0 +1,80 @@
+{
+  "name": "mlx-studio-vscode",
+  "displayName": "MLX Studio Local Chat",
+  "description": "VS Code webview chat for the local MLX Studio runtime.",
+  "version": "0.0.1",
+  "publisher": "hugeus-local",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onView:mlxStudio.chatView",
+    "onCommand:mlxStudio.openChat",
+    "onCommand:mlxStudio.openChatPanel",
+    "onCommand:mlxStudio.startLocalServer",
+    "onCommand:mlxStudio.addActiveFileToChat",
+    "onCommand:mlxStudio.addSelectionToChat"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "mlxStudio.openChat",
+        "title": "MLX Studio: Open Chat"
+      },
+      {
+        "command": "mlxStudio.openChatPanel",
+        "title": "MLX Studio: Open Chat Panel"
+      },
+      {
+        "command": "mlxStudio.startLocalServer",
+        "title": "MLX Studio: Start Local Server"
+      },
+      {
+        "command": "mlxStudio.addActiveFileToChat",
+        "title": "MLX Studio: Add Active File To Chat"
+      },
+      {
+        "command": "mlxStudio.addSelectionToChat",
+        "title": "MLX Studio: Add Selection To Chat"
+      }
+    ],
+    "configuration": {
+      "title": "MLX Studio",
+      "properties": {
+        "mlxStudio.serverUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:8010",
+          "description": "Base URL for the local MLX Studio FastAPI server."
+        },
+        "mlxStudio.maxContextChars": {
+          "type": "number",
+          "default": 12000,
+          "minimum": 1000,
+          "description": "Maximum characters attached for an active file or selection context block."
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "mlxStudio",
+          "title": "MLX Studio",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "mlxStudio": [
+        {
+          "type": "webview",
+          "id": "mlxStudio.chatView",
+          "name": "Chat"
+        }
+      ]
+    }
+  }
+}

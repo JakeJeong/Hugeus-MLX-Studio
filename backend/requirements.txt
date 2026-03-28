@@ -1,0 +1,4 @@
+mlx-lm
+llama-cpp-python
+fastapi
+uvicorn[standard]

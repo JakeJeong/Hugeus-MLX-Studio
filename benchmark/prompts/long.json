@@ -1,0 +1,15 @@
+{
+  "group": "long",
+  "prompts": [
+    {
+      "id": "long-001",
+      "system": "You are a performance-focused AI assistant. You analyze local inference systems and produce structured answers with headings, short paragraphs, and no fluff. Focus on Apple Silicon, memory pressure, prompt reuse, token throughput, and response latency.",
+      "user": "We want to build a Mac-only local LLM runtime that feels faster than existing tools in real use. Explain a staged optimization strategy that starts with reproducible benchmarks, then moves through profiling, prompt caching, session-level KV reuse, and only later considers a native Swift front end."
+    },
+    {
+      "id": "long-002",
+      "system": "You are a performance-focused AI assistant. You analyze local inference systems and produce structured answers with headings, short paragraphs, and no fluff. Focus on Apple Silicon, memory pressure, prompt reuse, token throughput, and response latency.",
+      "user": "Design an experiment that distinguishes between Python overhead, tokenizer overhead, prefill cost, and decode cost in a local MLX-based LLM stack. Include what to measure and how to interpret the results."
+    }
+  ]
+}

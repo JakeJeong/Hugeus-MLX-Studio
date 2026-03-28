@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>MLX Studio</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar left-sidebar">
+        <div class="brand-card">
+          <p class="eyebrow">Apple Silicon Local Runtime</p>
+          <h1>MLX Studio</h1>
+          <p class="subtle">
+            Fast local chat with model switching, workspace context, and performance metrics.
+          </p>
+          <div class="status-strip">
+            <span id="status-pill" class="pill">Idle</span>
+            <span id="status-text" class="subtle">Checking runtime...</span>
+          </div>
+        </div>
+
+        <section class="panel-section">
+          <div class="section-header">
+            <div>
+              <p class="eyebrow">Runtime</p>
+              <h2>Model Access</h2>
+            </div>
+          </div>
+          <div class="info-card runtime-summary">
+            <strong id="sidebar-active-model">-</strong>
+            <p>Open the manager to switch, download, unload, or delete local models.</p>
+          </div>
+          <label class="field">
+            <span>Engine</span>
+            <select id="runtime-select">
+              <option value="mlx">MLX</option>
+              <option value="llama_cpp">llama.cpp Metal</option>
+              <option value="mock">Mock</option>
+            </select>
+          </label>
+          <button id="open-model-manager-button" class="button" type="button">Manage Models</button>
+        </section>
+
+        <section class="panel-section">
+          <div class="section-header">
+            <div>
+              <p class="eyebrow">Session</p>
+              <h2>Generation</h2>
+            </div>
+          </div>
+          <div class="preset-row" aria-label="Generation presets">
+            <button id="preset-general" class="button ghost compact filter-toggle" type="button" aria-pressed="false">General</button>
+            <button id="preset-coding" class="button ghost compact filter-toggle" type="button" aria-pressed="false">Coding</button>
+            <button id="preset-stable" class="button ghost compact filter-toggle" type="button" aria-pressed="false">Stable</button>
+          </div>
+          <div id="preset-description" class="subtle preset-description">Choose a preset to load recommended settings.</div>
+          <div class="settings-grid">
+            <label class="field">
+              <span>Max Tokens</span>
+              <input id="max-tokens" type="number" min="1" max="4096" value="200">
+            </label>
+            <label class="field">
+              <span>Temperature</span>
+              <input id="temperature" type="number" min="0" max="2" step="0.1" value="0">
+            </label>
+            <label class="field">
+              <span>Top P</span>
+              <input id="top-p" type="number" min="0" max="1" step="0.01" value="0.95">
+            </label>
+            <label class="field">
+              <span>Top K</span>
+              <input id="top-k" type="number" min="0" max="500" step="1" value="40">
+            </label>
+            <label class="field">
+              <span>Min P</span>
+              <input id="min-p" type="number" min="0" max="1" step="0.01" value="0">
+            </label>
+            <label class="field">
+              <span>Repeat Penalty</span>
+              <input id="repeat-penalty" type="number" min="0" max="3" step="0.01" value="1.05">
+            </label>
+            <label class="field">
+              <span>Repeat Window</span>
+              <input id="repeat-context-size" type="number" min="0" max="4096" step="1" value="64">
+            </label>
+          </div>
+          <label class="field">
+            <span>Stop Strings</span>
+            <input id="stop-strings" type="text" placeholder="<|im_end|>, User:, ```output">
+            <small class="field-hint">Comma-separated. Matching text is trimmed from the streamed reply.</small>
+          </label>
+          <label class="checkbox-field">
+            <input id="enable-thinking" type="checkbox">
+            <span>Thinking Mode</span>
+            <small class="field-hint">Mainly affects Qwen3.5 models. Turn off to hide long reasoning by default.</small>
+          </label>
+          <label class="field">
+            <span>System Prompt</span>
+            <textarea id="system-prompt" rows="6">You are a helpful local assistant. Answer clearly and stay concise.</textarea>
+          </label>
+          <button id="save-settings-button" class="button secondary" type="button">Save Settings</button>
+        </section>
+      </aside>
+
+      <main class="chat-panel">
+        <header class="chat-header">
+          <div>
+            <p class="eyebrow">Chat</p>
+            <h2 id="active-model">-</h2>
+            <p class="subtle">Streaming local responses with optional workspace context.</p>
+          </div>
+          <div class="header-actions">
+            <button id="header-model-manager-button" class="button ghost" type="button">Models</button>
+            <span id="request-state" class="request-badge">Idle</span>
+            <button id="clear-chat-button" class="button ghost" type="button">Clear Chat</button>
+          </div>
+        </header>
+
+        <section class="context-section">
+          <div class="section-header inline-header">
+            <div>
+              <p class="eyebrow">Context</p>
+              <h2>Selected Files</h2>
+            </div>
+          </div>
+          <div id="context-files" class="chip-row"></div>
+        </section>
+
+        <section class="conversation-panel">
+          <div id="messages" class="messages"></div>
+        </section>
+
+        <form id="chat-form" class="composer" autocomplete="off">
+          <textarea
+            id="user-input"
+            rows="3"
+            placeholder="Ask something about the model, this project, or the selected files..."
+          ></textarea>
+          <div class="composer-footer">
+            <p class="subtle">Enter to send, Shift+Enter for a new line.</p>
+            <div class="composer-buttons">
+              <button id="stop-button" type="button" class="button ghost" disabled>Stop</button>
+              <button id="send-button" type="submit" class="button">Send</button>
+            </div>
+          </div>
+        </form>
+      </main>
+
+      <aside class="sidebar right-sidebar">
+        <section class="panel-section metrics-section">
+          <div class="section-header">
+            <div>
+              <p class="eyebrow">Performance</p>
+              <h2>Runtime Metrics</h2>
+            </div>
+          </div>
+          <div class="metric-stack">
+            <div class="metric-card">
+              <span>TTFT</span>
+              <strong id="metric-ttft">-</strong>
+            </div>
+            <div class="metric-card">
+              <span>Prefill</span>
+              <strong id="metric-prefill">-</strong>
+            </div>
+            <div class="metric-card">
+              <span>Decode</span>
+              <strong id="metric-decode">-</strong>
+            </div>
+            <div class="metric-card">
+              <span>Peak Memory</span>
+              <strong id="metric-memory">-</strong>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel-section workspace-section">
+          <div class="section-header">
+            <div>
+              <p class="eyebrow">Workspace</p>
+              <h2>Files</h2>
+            </div>
+            <button id="refresh-files-button" class="button ghost compact" type="button">Refresh</button>
+          </div>
+          <div class="search-row">
+            <input id="file-search-input" type="text" placeholder="Search files...">
+            <button id="file-search-button" class="button compact" type="button">Find</button>
+          </div>
+          <div id="workspace-files" class="file-list"></div>
+        </section>
+
+        <section class="panel-section preview-section">
+          <div class="section-header">
+            <div>
+              <p class="eyebrow">Preview</p>
+              <h2 id="preview-title">No file selected</h2>
+            </div>
+            <button id="toggle-context-button" class="button ghost compact" type="button" disabled>Add to Chat</button>
+          </div>
+          <div id="preview-meta" class="subtle">Pick a file to inspect it and use it as chat context.</div>
+          <pre id="file-preview" class="file-preview">Select a file from the list to preview its contents.</pre>
+        </section>
+      </aside>
+    </div>
+
+    <div id="model-manager-modal" class="modal-backdrop hidden" aria-hidden="true">
+      <div class="modal-panel">
+        <div class="modal-header">
+          <div>
+            <p class="eyebrow">Model Manager</p>
+            <h2>Local + Remote MLX Models</h2>
+            <p class="subtle">Switch models without giving up chat space.</p>
+          </div>
+          <button id="close-model-manager-button" class="button ghost compact" type="button">Close</button>
+        </div>
+
+        <div class="modal-grid">
+          <section class="panel-section modal-section">
+            <div class="section-header">
+              <div>
+                <p class="eyebrow">Installed</p>
+                <h2>Local Models</h2>
+              </div>
+              <button id="refresh-models-button" class="button ghost compact" type="button">Refresh</button>
+            </div>
+            <div class="filter-toggle-row" aria-label="Local model format filters">
+              <button id="filter-local-mlx" class="button ghost compact filter-toggle active" type="button" aria-pressed="true">
+                MLX
+              </button>
+              <button id="filter-local-gguf" class="button ghost compact filter-toggle active" type="button" aria-pressed="true">
+                GGUF
+              </button>
+            </div>
+            <div id="local-model-summary" class="local-model-summary subtle"></div>
+            <div id="local-models" class="card-list modal-list"></div>
+            <div class="inline-actions">
+              <button id="unload-model-button" class="button ghost" type="button">Unload Current Model</button>
+            </div>
+          </section>
+
+          <section class="panel-section modal-section">
+            <div class="section-header">
+              <div>
+                <p class="eyebrow">llama.cpp</p>
+                <h2>Local GGUF Models</h2>
+              </div>
+              <button id="refresh-gguf-button" class="button ghost compact" type="button">Refresh</button>
+            </div>
+            <div class="search-row">
+              <input id="gguf-path-input" type="text" placeholder="/path/to/model.gguf">
+              <button id="gguf-activate-button" class="button compact" type="button">Use Path</button>
+            </div>
+            <div id="gguf-models" class="card-list modal-list"></div>
+            <div class="section-header section-subheader">
+              <div>
+                <p class="eyebrow">Remote</p>
+                <h2>GGUF Files</h2>
+              </div>
+            </div>
+            <div id="gguf-remote-files" class="card-list modal-list"></div>
+          </section>
+
+          <section class="panel-section modal-section">
+            <div class="section-header">
+              <div>
+                <p class="eyebrow">Discover</p>
+                <h2>Search MLX Community</h2>
+              </div>
+            </div>
+            <div class="search-row">
+              <input id="model-search-input" type="text" placeholder="qwen, 7b, coder...">
+              <button id="model-search-button" class="button compact" type="button">Search</button>
+            </div>
+            <div id="model-search-results" class="card-list modal-list search-results"></div>
+          </section>
+        </div>
+      </div>
+    </div>
+
+    <div id="activity-overlay" class="activity-overlay hidden" aria-live="polite">
+      <div class="activity-card">
+        <div class="activity-spinner"></div>
+        <div class="activity-copy">
+          <strong id="activity-title">Working...</strong>
+          <p id="activity-detail" class="subtle">Preparing local model runtime.</p>
+          <div class="activity-progress">
+            <div id="activity-progress-bar" class="activity-progress-bar"></div>
+          </div>
+          <div id="activity-progress-text" class="activity-progress-text subtle">Please wait</div>
+          <div class="activity-actions">
+            <button id="cancel-download-button" class="button ghost compact hidden" type="button">Cancel Download</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="/static/app.js?v=20260328-2"></script>
+  </body>
+</html>

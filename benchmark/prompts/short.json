@@ -1,0 +1,20 @@
+{
+  "group": "short",
+  "prompts": [
+    {
+      "id": "short-001",
+      "system": "You are a concise assistant. Keep the answer under 80 words.",
+      "user": "Explain what unified memory means on Apple Silicon in simple terms."
+    },
+    {
+      "id": "short-002",
+      "system": "You are a concise assistant. Keep the answer under 80 words.",
+      "user": "What is the difference between TTFT and decode throughput?"
+    },
+    {
+      "id": "short-003",
+      "system": "You are a concise assistant. Keep the answer under 80 words.",
+      "user": "Why can prompt caching improve repeated LLM requests?"
+    }
+  ]
+}
