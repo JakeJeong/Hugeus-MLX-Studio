@@ -119,20 +119,20 @@ VS Code Extension / Web UI
 
 ## 빠른 시작
 
+아래 명령은 이 저장소의 루트 디렉터리에서 실행한다고 가정합니다.
+
 ### 1. 의존성 설치
 
 ```bash
-cd /Users/hugeus/develop/hugeus/MLX_project
 python3 -m venv .venv
 .venv/bin/pip install -r backend/requirements.txt
 ```
 
 ### 2. 서버 실행
 
-프로젝트 루트에서:
+저장소 루트에서:
 
 ```bash
-cd /Users/hugeus/develop/hugeus/MLX_project
 ./scripts/ui.sh --port 8010
 ```
 
