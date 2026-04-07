@@ -36,20 +36,22 @@ class ModelStore:
         self._mlx_validation_cache: dict[str, tuple[bool, str | None]] = {}
 
     def list_local_models(self) -> list[dict[str, object]]:
-        if not self.cache_root.exists():
-            return []
-
         models: list[dict[str, object]] = []
-        for entry in sorted(self.cache_root.glob("models--mlx-community--*")):
+        seen_ids: set[str] = set()
+
+        for entry in self._hf_cache_mlx_entries():
             repo_id = self._repo_id_from_cache_dir(entry.name)
-            if repo_id is None:
+            if repo_id is None or repo_id in seen_ids:
                 continue
+            seen_ids.add(repo_id)
             snapshot_dir = self._latest_snapshot_dir(entry)
             has_weights = snapshot_dir is not None and self._snapshot_has_mlx_weights(entry)
             compatible, error = self._validate_mlx_snapshot(snapshot_dir) if has_weights else (False, "No MLX safetensors found in the cached snapshot.")
             models.append(
                 {
                     "id": repo_id,
+                    "display_name": repo_id,
+                    "repo_id": repo_id,
                     "cached": True,
                     "size_gb": round(self._dir_size(entry) / 1e9, 2),
                     "path": str(entry),
@@ -57,7 +59,29 @@ class ModelStore:
                     "error": None if has_weights and compatible else error,
                 }
             )
-        return models
+
+        for entry in self._external_mlx_roots():
+            model_id = str(entry)
+            if model_id in seen_ids:
+                continue
+            seen_ids.add(model_id)
+            has_weights = self._directory_has_mlx_weights(entry)
+            compatible, error = self._validate_mlx_snapshot(entry) if has_weights else (False, "No MLX safetensors found in the model directory.")
+            repo_id = self._repo_id_for_external_mlx(entry)
+            models.append(
+                {
+                    "id": model_id,
+                    "display_name": repo_id or entry.name,
+                    "repo_id": repo_id,
+                    "cached": True,
+                    "size_gb": round(self._dir_size(entry) / 1e9, 2),
+                    "path": str(entry),
+                    "ready": has_weights and compatible,
+                    "error": None if has_weights and compatible else error,
+                }
+            )
+
+        return sorted(models, key=lambda item: str(item.get("display_name") or item["id"]).lower())
 
     def list_local_gguf_models(self, limit: int = 80) -> list[dict[str, object]]:
         models: list[dict[str, object]] = []
@@ -199,6 +223,10 @@ class ModelStore:
         }
 
     def delete_model(self, model_id: str) -> None:
+        direct_path = Path(model_id).expanduser()
+        if direct_path.exists() and direct_path.is_dir():
+            shutil.rmtree(direct_path, ignore_errors=True)
+            return
         cache_dir = self.cache_root / self._cache_folder_name(model_id)
         if cache_dir.exists():
             shutil.rmtree(cache_dir)
@@ -228,6 +256,12 @@ class ModelStore:
         return (self.cache_root / self._cache_folder_name(model_id)).exists()
 
     def mlx_model_status(self, model_id: str) -> tuple[bool, str | None]:
+        direct_path = Path(model_id).expanduser()
+        if direct_path.exists() and direct_path.is_dir():
+            if not self._directory_has_mlx_weights(direct_path):
+                return False, "No MLX safetensors found in the model directory."
+            return self._validate_mlx_snapshot(direct_path)
+
         cache_dir = self.cache_root / self._cache_folder_name(model_id)
         snapshot_dir = self._latest_snapshot_dir(cache_dir)
         if snapshot_dir is None or not self._snapshot_has_mlx_weights(cache_dir):
@@ -259,6 +293,34 @@ class ModelStore:
             home / ".lmstudio" / "models",
             home / "Library" / "Application Support" / "LM Studio" / "models",
         ]
+
+    def _hf_cache_mlx_entries(self) -> list[Path]:
+        if not self.cache_root.exists():
+            return []
+        return sorted(self.cache_root.glob("models--mlx-community--*"))
+
+    def _external_mlx_roots(self) -> list[Path]:
+        home = Path.home()
+        roots = [
+            home / ".lmstudio" / "models" / "mlx-community",
+            home / ".cache" / "lmstudio" / "models" / "mlx-community",
+            home / ".cache" / "lm-studio" / "models" / "mlx-community",
+            home / "Library" / "Application Support" / "LM Studio" / "models" / "mlx-community",
+        ]
+        entries: list[Path] = []
+        for root in roots:
+            if not root.exists():
+                continue
+            for entry in root.iterdir():
+                if entry.is_dir():
+                    entries.append(entry)
+        return sorted(entries)
+
+    def _repo_id_for_external_mlx(self, path: Path) -> str | None:
+        for parent in path.parents:
+            if parent.name == "mlx-community":
+                return f"mlx-community/{path.name}"
+        return None
 
     def _repo_id_for_gguf(self, path: Path) -> str | None:
         for parent in path.parents:
@@ -314,6 +376,9 @@ class ModelStore:
         if not snapshots_dir.exists():
             return False
         return any(snapshots_dir.rglob("*.safetensors"))
+
+    def _directory_has_mlx_weights(self, directory: Path) -> bool:
+        return any(directory.glob("model*.safetensors"))
 
     def _latest_snapshot_dir(self, cache_dir: Path) -> Path | None:
         snapshots_dir = cache_dir / "snapshots"

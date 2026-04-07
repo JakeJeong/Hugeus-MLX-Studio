@@ -1,20 +1,50 @@
 "use strict";
 
 const path = require("node:path");
+const { spawn } = require("node:child_process");
 const { TextDecoder } = require("node:util");
 const { randomUUID } = require("node:crypto");
 const vscode = require("vscode");
 
 const VIEW_ID = "mlxStudio.chatView";
+const MODELS_VIEW_ID = "mlxStudio.modelsView";
 const PANEL_ID = "mlxStudio.chatPanel";
 const DEFAULT_SYSTEM_PROMPT =
   "You are a helpful local assistant. Answer clearly, stay concise, and match the user's language.";
+const SERVER_PORT = "8010";
+
+let managedServerProcess = null;
+let managedServerStopTimer = null;
+let serverOutputChannel = null;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isManagedServerRunning() {
+  return Boolean(managedServerProcess && managedServerProcess.exitCode === null && !managedServerProcess.killed);
+}
+
+function compactModelLabel(rawLabel, fallbackPath) {
+  const label = String(rawLabel || "").trim();
+  if (label && !label.startsWith("/") && !label.startsWith("\\")) {
+    return label;
+  }
+  const source = String(fallbackPath || rawLabel || "").trim();
+  return source ? path.basename(source) : "Unknown model";
+}
+
+function buildModelTooltip(parts) {
+  return parts
+    .map((part) => String(part || "").trim())
+    .filter(Boolean)
+    .join("\n");
+}
 
 class MlxStudioViewProvider {
   constructor(context) {
     this.context = context;
     this.view = null;
-    this.panel = null;
     this.serverStatus = null;
     this.sessionId = randomUUID();
     this.systemPrompt = DEFAULT_SYSTEM_PROMPT;
@@ -23,9 +53,15 @@ class MlxStudioViewProvider {
     this.targetContextId = null;
     this.targetFolder = null;
     this.localModels = [];
+    this.modelSearchResults = [];
+    this.modelSearchQuery = "";
+    this.modelActivity = null;
+    this.modelManagerOpen = false;
     this.isGenerating = false;
     this.activePhase = null;
     this.vibeMode = false;
+    this.switchingModelKey = null;
+    this.switchingModelLabel = null;
     this.currentRequestMode = "chat";
     this.currentRequestTargetFolder = null;
     this.currentRequestFileSpec = null;
@@ -34,50 +70,27 @@ class MlxStudioViewProvider {
     this.pendingConfirmationResolver = null;
     this.workspaceFileSearchIndex = [];
     this.workspaceFileSearchIndexedAt = 0;
+    this.editProposals = new Map();
+    this.modelsViewProvider = null;
+  }
+
+  setModelsViewProvider(provider) {
+    this.modelsViewProvider = provider;
   }
 
   resolveWebviewView(webviewView) {
     this.view = webviewView;
-
-    // Show a redirect stub in the sidebar and open the real UI as a right-side panel.
-    webviewView.webview.options = { enableScripts: false };
-    webviewView.webview.html = getSidebarRedirectHtml();
-
-    // Slight delay so VSCode finishes rendering the sidebar before we open the panel.
-    setTimeout(() => this.showPanel(), 100);
+    this.configureWebview(webviewView.webview);
 
     webviewView.onDidDispose(() => {
       this.view = null;
     });
   }
 
-  showPanel() {
-    if (this.panel) {
-      this.panel.reveal(vscode.ViewColumn.Two, true);
-      this.postState();
-      return;
-    }
-
-    this.panel = vscode.window.createWebviewPanel(
-      PANEL_ID,
-      "MLX Studio",
-      {
-        viewColumn: vscode.ViewColumn.Two,
-        preserveFocus: true,
-      },
-      {
-        enableScripts: true,
-        retainContextWhenHidden: true,
-        localResourceRoots: [vscode.Uri.joinPath(this.context.extensionUri, "media")],
-      }
-    );
-
-    this.panel.iconPath = vscode.Uri.joinPath(this.context.extensionUri, "media", "icon.svg");
-    this.configureWebview(this.panel.webview);
-
-    this.panel.onDidDispose(() => {
-      this.panel = null;
-    });
+  async revealView() {
+    await vscode.commands.executeCommand("workbench.view.extension.mlxStudio");
+    await vscode.commands.executeCommand(`${VIEW_ID}.focus`);
+    this.postState();
   }
 
   configureWebview(webview) {
@@ -116,8 +129,29 @@ class MlxStudioViewProvider {
       case "switch-model":
         await this.switchModel(String(message.key || ""));
         return;
+      case "toggle-model-manager":
+        await vscode.commands.executeCommand("mlxStudio.openModels");
+        return;
+      case "search-models":
+        await this.searchModels(String(message.query || ""));
+        return;
+      case "download-model":
+        await this.downloadModelFromManager(String(message.modelId || ""), String(message.format || "mlx"));
+        return;
+      case "delete-local-model":
+        await this.deleteLocalModel(String(message.key || ""));
+        return;
+      case "unload-model":
+        await this.unloadCurrentModel();
+        return;
+      case "cancel-model-download":
+        await this.cancelModelDownload();
+        return;
       case "start-server":
-        await startLocalServer(this.context);
+        await startLocalServer(this.context, this);
+        return;
+      case "stop-server":
+        await stopLocalServer(this);
         return;
       case "add-active-file":
         await this.addActiveFile();
@@ -153,6 +187,15 @@ class MlxStudioViewProvider {
         return;
       case "apply-code":
         await this.applyCode(String(message.code || ""), String(message.contextItemId || ""));
+        return;
+      case "preview-proposal":
+        await this.previewEditProposal(String(message.proposalId || ""));
+        return;
+      case "apply-proposal":
+        await this.applyEditProposal(String(message.proposalId || ""));
+        return;
+      case "reject-proposal":
+        this.rejectEditProposal(String(message.proposalId || ""));
         return;
       case "create-file":
         await this.createFileFromCode(String(message.code || ""), String(message.language || ""));
@@ -196,6 +239,14 @@ class MlxStudioViewProvider {
     await this.refreshModelOptions();
   }
 
+  async refreshActivity() {
+    try {
+      this.modelActivity = await this.fetchJson("/api/activity");
+    } catch {
+      this.modelActivity = null;
+    }
+  }
+
   async refreshModelOptions() {
     try {
       const [mlxPayload, ggufPayload] = await Promise.all([
@@ -207,33 +258,205 @@ class MlxStudioViewProvider {
       this.localModels = [
         ...mlxModels
           .filter((model) => model.ready !== false)
-          .map((model) => ({
-            key: `mlx:${model.id}`,
-            id: model.id,
-            label: model.id,
-            runtime: "mlx",
-            format: "MLX",
-            detail: model.size_gb ? `${Number(model.size_gb).toFixed(2)} GB` : "Local",
-            selected: Boolean(model.selected),
-            loaded: Boolean(model.loaded),
-          })),
+          .map((model) => {
+            const label = compactModelLabel(
+              model.display_name || model.repo_id || model.id,
+              model.path || model.id,
+            );
+            return {
+              key: `mlx:${model.id}`,
+              id: model.id,
+              label,
+              runtime: "mlx",
+              format: "MLX",
+              detail: model.size_gb ? `${Number(model.size_gb).toFixed(2)} GB` : "Local",
+              tooltip: buildModelTooltip([
+                label,
+                model.repo_id || model.id,
+                model.path,
+              ]),
+              path: model.path || model.id,
+              selected: Boolean(model.selected),
+              loaded: Boolean(model.loaded),
+            };
+          }),
         ...ggufModels
           .filter((model) => model.ready !== false)
-          .map((model) => ({
-            key: `gguf:${model.path}`,
-            id: model.id,
-            modelId: model.path,
-            label: model.id,
-            runtime: "llama_cpp",
-            format: "GGUF",
-            detail: model.size_gb ? `${Number(model.size_gb).toFixed(2)} GB` : model.path,
-            path: model.path,
-            selected: Boolean(model.selected),
-            loaded: Boolean(model.loaded),
-          })),
+          .map((model) => {
+            const label = compactModelLabel(model.id || path.basename(model.path || ""), model.path);
+            return {
+              key: `gguf:${model.path}`,
+              id: model.id,
+              modelId: model.path,
+              label,
+              runtime: "llama_cpp",
+              format: "GGUF",
+              detail: model.size_gb ? `${Number(model.size_gb).toFixed(2)} GB` : "Local",
+              tooltip: buildModelTooltip([
+                label,
+                model.id,
+                model.path,
+              ]),
+              path: model.path,
+              selected: Boolean(model.selected),
+              loaded: Boolean(model.loaded),
+            };
+          }),
       ];
     } catch {
       this.localModels = [];
+    }
+  }
+
+  async searchModels(query) {
+    const trimmed = String(query || "").trim();
+    this.modelSearchQuery = trimmed;
+    if (!trimmed) {
+      this.modelSearchResults = [];
+      this.postState();
+      return;
+    }
+    this.activePhase = "Searching models...";
+    this.postState();
+    try {
+      const payload = await this.fetchJson("/api/models/search", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ query: trimmed }),
+      });
+      this.modelSearchResults = Array.isArray(payload.results) ? payload.results : [];
+      await this.refreshActivity();
+    } finally {
+      this.activePhase = null;
+      this.postState();
+    }
+  }
+
+  async pickGgufFilename(modelId) {
+    const payload = await this.fetchJson(`/api/models/files?model_id=${encodeURIComponent(modelId)}&format=gguf`);
+    const files = Array.isArray(payload.files) ? payload.files : [];
+    if (files.length === 0) {
+      throw new Error("No GGUF files found in this repository.");
+    }
+    if (files.length === 1) {
+      return files[0].name;
+    }
+    const picked = await vscode.window.showQuickPick(
+      files.map((file) => ({
+        label: file.name,
+        description: file.size_gb ? `${Number(file.size_gb).toFixed(2)} GB` : "",
+      })),
+      {
+        title: "Choose GGUF file to download",
+        placeHolder: "Select a GGUF quantization file",
+      }
+    );
+    return picked?.label || null;
+  }
+
+  async downloadModelFromManager(modelId, format) {
+    if (!modelId) {
+      return;
+    }
+    let filename = null;
+    if (format === "gguf") {
+      filename = await this.pickGgufFilename(modelId);
+      if (!filename) {
+        return;
+      }
+    }
+    this.activePhase = "Starting download...";
+    await this.refreshActivity();
+    this.postState();
+    try {
+      await this.fetchJson("/api/models/download", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model_id: modelId,
+          format,
+          filename,
+        }),
+      });
+      await this.monitorDownloadActivity();
+      await this.refreshStatus();
+      if (this.modelSearchQuery) {
+        await this.searchModels(this.modelSearchQuery);
+      }
+    } finally {
+      this.activePhase = null;
+      this.postState();
+    }
+  }
+
+  async monitorDownloadActivity() {
+    for (let attempt = 0; attempt < 240; attempt += 1) {
+      await this.refreshActivity();
+      this.postState();
+      if (!this.modelActivity?.active) {
+        return;
+      }
+      await sleep(500);
+    }
+  }
+
+  async cancelModelDownload() {
+    await this.fetchJson("/api/models/download/cancel", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({}),
+    });
+    await this.refreshActivity();
+    this.postState();
+  }
+
+  async unloadCurrentModel() {
+    await this.fetchJson("/api/models/unload", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({}),
+    });
+    await this.refreshStatus();
+    this.postState();
+  }
+
+  async deleteLocalModel(key) {
+    const target = this.localModels.find((item) => item.key === key);
+    if (!target) {
+      throw new Error("Selected local model was not found.");
+    }
+    const confirmed = await vscode.window.showWarningMessage(
+      `Delete ${target.label}?`,
+      { modal: true },
+      "Delete"
+    );
+    if (confirmed !== "Delete") {
+      return;
+    }
+    await this.fetchJson("/api/models/delete", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(
+        target.runtime === "llama_cpp"
+          ? { model_path: target.path, format: "gguf" }
+          : { model_id: target.id, format: "mlx" }
+      ),
+    });
+    await this.refreshStatus();
+    if (this.modelSearchQuery) {
+      await this.searchModels(this.modelSearchQuery);
+    } else {
+      this.postState();
     }
   }
 
@@ -314,6 +537,9 @@ class MlxStudioViewProvider {
                   ? `편집 타깃: ${targetItem.label}. 사용자가 이 선택 범위를 수정하길 원하면 그 범위를 대체할 전체 코드만 단일 fenced code block으로 반환하세요.`
                   : `편집 타깃: ${targetItem.label}. 사용자가 이 파일 수정을 원하면 전체 수정본만 단일 fenced code block으로 반환하세요.`
                 : "편집 타깃이 명시적으로 연결되지 않았다면 일반 답변으로 처리하세요.",
+              targetItem
+                ? `사용자가 방금 명시적으로 붙인 타깃이 ${targetItem.label} 이라면, 먼저 이 파일/선택 범위를 읽고 그 내용에 근거해서 답하세요.`
+                : null,
               "사용자가 새 파일 생성을 원할 때만 아래 형식으로만 응답하세요:",
               "@@path relative/path/from/workspace",
               "```language",
@@ -338,6 +564,9 @@ class MlxStudioViewProvider {
                   ? `Edit target: ${targetItem.label}. If the user wants this selection changed, return ONLY a standalone fenced code block containing the full replacement for that selection.`
                   : `Edit target: ${targetItem.label}. If the user wants this file changed, return ONLY a standalone fenced code block containing the complete updated file contents.`
                 : "If there is no explicit edit target, treat the request as normal chat unless the user clearly wants a new file.",
+              targetItem
+                ? `If the user explicitly attached ${targetItem.label}, read that target first and ground your answer in it instead of replying generically.`
+                : null,
               "Return this exact structure only when creating a new file:",
               "@@path relative/path/from/workspace",
               "```language",
@@ -346,7 +575,9 @@ class MlxStudioViewProvider {
               "Return a standalone fenced code block only when directly editing the attached target.",
               "Otherwise answer normally.",
             ]
-        ).join("\n")
+        )
+          .filter(Boolean)
+          .join("\n")
       );
     }
 
@@ -652,7 +883,7 @@ class MlxStudioViewProvider {
       const uri = vscode.Uri.parse(uriString);
       const document = await vscode.workspace.openTextDocument(uri);
       this.upsertContext(this.buildFileContextItem(document), {
-        makeTarget: !this.getTargetContextItem(),
+        makeTarget: true,
       });
     } catch (error) {
       vscode.window.showWarningMessage(
@@ -926,6 +1157,18 @@ class MlxStudioViewProvider {
     return this.extractRequestedFileSpec(text).canCreate;
   }
 
+  looksLikeEditRequest(text) {
+    const value = String(text || "").trim();
+    if (!value) {
+      return false;
+    }
+
+    return (
+      /\b(edit|update|modify|change|fix|rewrite|refactor|patch|replace|cleanup|improve|apply)\b/i.test(value) ||
+      /(수정|바꿔|변경|고쳐|리팩터링|패치|적용|개선|정리|업데이트)/.test(value)
+    );
+  }
+
   extractRequestedFileSpec(text) {
     const value = String(text || "").trim();
     if (!value) {
@@ -1110,6 +1353,143 @@ class MlxStudioViewProvider {
     };
   }
 
+  stripProtocolMarkup(text) {
+    return String(text || "")
+      .replace(/\r\n/g, "\n")
+      .replace(/<\|channel\>thought[\s\S]*?(?:<channel\|>|$)\s*/gi, "")
+      .replace(/<think>[\s\S]*?(?:<\/think>|$)\s*/gi, "")
+      .replace(/<\|think\|>[\s\S]*?(?:<\|\/think\|>|<\/think>|$)\s*/gi, "")
+      .replace(/^[ \t]*(?:@@(?:path[ \t]+)?[^\n]+|path:\s*[^\n]+)[ \t]*\n?/gim, "")
+      .replace(/^\s*\n/g, "")
+      .trim();
+  }
+
+  isLooseTextTarget(target) {
+    const label = String(target?.label || "").toLowerCase();
+    return [".md", ".markdown", ".mdx", ".txt"].some((extension) => label.endsWith(extension));
+  }
+
+  extractEditableResponsePayload(assistant, target) {
+    const codeBlock = this.extractStandaloneCodeBlockInfo(assistant.content);
+    if (codeBlock?.code) {
+      return codeBlock.code;
+    }
+    if (target.kind === "file" && this.isLooseTextTarget(target)) {
+      return this.stripProtocolMarkup(assistant.content);
+    }
+    return "";
+  }
+
+  getPreviewStorageUri() {
+    return vscode.Uri.joinPath(this.context.globalStorageUri, "diff-previews");
+  }
+
+  async createEditProposal(target, content) {
+    const resolved = await this.resolveContextDocument(target);
+    if (!resolved) {
+      return null;
+    }
+
+    const proposalId = randomUUID();
+    const extension = path.extname(resolved.document.uri.fsPath || target.label || "") || ".txt";
+    const previewDir = this.getPreviewStorageUri();
+    const previewUri = vscode.Uri.joinPath(previewDir, `${proposalId}${extension}`);
+    await vscode.workspace.fs.createDirectory(previewDir);
+    await vscode.workspace.fs.writeFile(previewUri, Buffer.from(content, "utf8"));
+
+    return {
+      id: proposalId,
+      targetContextId: target.id,
+      targetLabel: target.label,
+      targetDocumentVersion: resolved.document.version,
+      originalUri: resolved.document.uri.toString(),
+      previewUri: previewUri.toString(),
+      content,
+      status: "pending",
+    };
+  }
+
+  async previewEditProposal(proposalId) {
+    const proposal = this.editProposals.get(proposalId);
+    if (!proposal) {
+      return;
+    }
+
+    await vscode.commands.executeCommand(
+      "vscode.diff",
+      vscode.Uri.parse(proposal.originalUri),
+      vscode.Uri.parse(proposal.previewUri),
+      `Proposed Changes: ${proposal.targetLabel}`,
+      { preview: true }
+    );
+  }
+
+  async applyEditProposal(proposalId) {
+    const proposal = this.editProposals.get(proposalId);
+    if (!proposal) {
+      return;
+    }
+
+    const assistant = this.getMessageById(proposal.messageId);
+    const target = this.contextItems.find((item) => item.id === proposal.targetContextId) || this.getTargetContextItem();
+    if (!assistant || !target) {
+      return;
+    }
+
+    const resolved = await this.resolveContextDocument(target);
+    if (!resolved) {
+      vscode.window.showWarningMessage("The selected target is no longer available.");
+      return;
+    }
+
+    if (
+      typeof proposal.targetDocumentVersion === "number" &&
+      resolved.document.version !== proposal.targetDocumentVersion
+    ) {
+      assistant.proposalStatus = "stale";
+      assistant.proposalMessage = "File changed after the proposal was generated.";
+      this.postState();
+      vscode.window.showWarningMessage("The file changed after the proposal was generated. Ask again to refresh the diff.");
+      return;
+    }
+
+    await this.applyCodeToTarget(proposal.content, target, { showMessage: false });
+    const refreshedDocument = await vscode.workspace.openTextDocument(resolved.document.uri);
+    const refreshedTarget =
+      target.kind === "selection" && target.selection
+        ? this.buildSelectionContextItem(
+            refreshedDocument,
+            new vscode.Selection(
+              new vscode.Position(target.selection.start.line, target.selection.start.character),
+              new vscode.Position(target.selection.end.line, target.selection.end.character)
+            ),
+            { id: target.id }
+          )
+        : this.buildFileContextItem(refreshedDocument, { id: target.id });
+
+    this.upsertContext(refreshedTarget, { makeTarget: true, post: false });
+    assistant.proposalStatus = "applied";
+    assistant.proposalMessage = `Applied to ${refreshedTarget.label}`;
+    proposal.status = "applied";
+    this.postState();
+    vscode.window.showInformationMessage(`Applied to ${refreshedTarget.label}`);
+  }
+
+  rejectEditProposal(proposalId) {
+    const proposal = this.editProposals.get(proposalId);
+    if (!proposal) {
+      return;
+    }
+
+    const assistant = this.getMessageById(proposal.messageId);
+    if (assistant) {
+      assistant.proposalStatus = "rejected";
+      assistant.proposalMessage = "Proposal dismissed.";
+    }
+    proposal.status = "rejected";
+    this.postState();
+  }
+
   extractGeneratedFilePayload(text) {
     const relativePath = this.extractGeneratedPathMarker(text);
     const codeBlock = this.extractLastCodeBlockInfo(text);
@@ -1126,6 +1506,10 @@ class MlxStudioViewProvider {
 
   detectRequestLanguage(text) {
     return /[가-힣]/.test(String(text || "")) ? "ko" : "en";
+  }
+
+  getMessageById(messageId) {
+    return this.messages.find((message) => message.id === messageId) || null;
   }
 
   isPlaceholderPath(relativePath) {
@@ -1423,16 +1807,16 @@ class MlxStudioViewProvider {
       return false;
     }
 
-    const codeBlock = this.extractStandaloneCodeBlockInfo(assistant.content);
-    if (!codeBlock?.code) {
-      return false;
-    }
-
     const target = assistant.targetContextId
       ? this.contextItems.find((item) => item.id === assistant.targetContextId)
       : this.getTargetContextItem();
 
     if (!target) {
+      return false;
+    }
+
+    const nextContent = this.extractEditableResponsePayload(assistant, target);
+    if (!nextContent) {
       return false;
     }
 
@@ -1450,25 +1834,18 @@ class MlxStudioViewProvider {
       return false;
     }
 
-    await this.applyCodeToTarget(codeBlock.code, target, { showMessage: false });
-    const refreshedDocument = await vscode.workspace.openTextDocument(resolved.document.uri);
-    const refreshedTarget =
-      target.kind === "selection" && target.selection
-        ? this.buildSelectionContextItem(
-            refreshedDocument,
-            new vscode.Selection(
-              new vscode.Position(target.selection.start.line, target.selection.start.character),
-              new vscode.Position(target.selection.end.line, target.selection.end.character)
-            ),
-            { id: target.id }
-          )
-        : this.buildFileContextItem(refreshedDocument, { id: target.id });
+    const proposal = await this.createEditProposal(target, nextContent);
+    if (!proposal) {
+      return false;
+    }
 
-    this.upsertContext(refreshedTarget, { makeTarget: true, post: false });
-    assistant.autoApplied = true;
-    assistant.autoApplySkipped = false;
-    assistant.targetLabel = refreshedTarget.label;
-    vscode.window.showInformationMessage(`Auto-applied to ${refreshedTarget.label}`);
+    proposal.messageId = assistant.id;
+    this.editProposals.set(proposal.id, proposal);
+    assistant.proposalId = proposal.id;
+    assistant.proposalStatus = "pending";
+    assistant.proposalMessage = `Diff ready for ${target.label}`;
+    assistant.targetLabel = target.label;
+    await this.previewEditProposal(proposal.id);
     return true;
   }
 
@@ -1480,19 +1857,21 @@ class MlxStudioViewProvider {
 
     this.currentRequestLanguage = this.detectRequestLanguage(userText);
     this.currentRequestFileSpec = this.extractRequestedFileSpec(userText);
-    const shouldUseEditMode = this.vibeMode;
-
-    if (shouldUseEditMode) {
+    if (this.vibeMode) {
       await this.ensureVibeTarget();
     }
     await this.refreshContextItems();
     const targetItem = this.getTargetContextItem();
+    const shouldUseEditMode =
+      this.vibeMode ||
+      (Boolean(targetItem) && this.looksLikeEditRequest(userText) && !this.looksLikeFileCreationRequest(userText));
     this.currentRequestTargetFolder = this.getDefaultCreationFolder();
     const requestTargetItem = targetItem;
     this.currentRequestMode = shouldUseEditMode ? "edit-file" : "auto";
 
-    this.messages.push({ role: "user", content: userText });
+    this.messages.push({ id: randomUUID(), role: "user", content: userText });
     this.messages.push({
+      id: randomUUID(),
       role: "assistant",
       content: "",
       targetContextId: requestTargetItem ? requestTargetItem.id : null,
@@ -1659,7 +2038,21 @@ class MlxStudioViewProvider {
       throw new Error("Selected model is no longer available locally.");
     }
 
+    this.switchingModelKey = target.key;
+    this.switchingModelLabel = target.label;
     this.activePhase = "Switching model...";
+    this.serverStatus = {
+      ...(this.serverStatus || {}),
+      available: true,
+      runtime: target.runtime,
+      model_id: target.runtime === "llama_cpp" ? (target.modelId || target.path || target.id) : target.id,
+      loaded: false,
+    };
+    this.localModels = this.localModels.map((item) => ({
+      ...item,
+      selected: item.key === target.key,
+      loaded: false,
+    }));
     this.postState();
     try {
       await this.fetchJson("/api/runtime", {
@@ -1683,11 +2076,31 @@ class MlxStudioViewProvider {
         }),
       });
 
-      await this.refreshStatus();
+      await this.waitForModelActivation(target);
     } finally {
+      this.switchingModelKey = null;
+      this.switchingModelLabel = null;
       this.activePhase = null;
       this.postState();
     }
+  }
+
+  async waitForModelActivation(target) {
+    const expectedModelId = target.runtime === "llama_cpp" ? (target.modelId || target.path || target.id) : target.id;
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      await this.refreshStatus();
+      const matches =
+        this.serverStatus?.available === true &&
+        this.serverStatus.runtime === target.runtime &&
+        this.serverStatus.model_id === expectedModelId &&
+        this.serverStatus.loaded === true;
+      this.postState();
+      if (matches) {
+        return;
+      }
+      await sleep(350);
+    }
+    await this.refreshStatus();
   }
 
   async addActiveFile() {
@@ -1749,6 +2162,11 @@ class MlxStudioViewProvider {
       payload: {
         serverStatus: this.serverStatus,
         localModels: this.localModels,
+        modelSearchResults: this.modelSearchResults,
+        modelSearchQuery: this.modelSearchQuery,
+        modelActivity: this.modelActivity,
+        modelManagerOpen: this.modelManagerOpen,
+        managedServerRunning: isManagedServerRunning(),
         messages: this.messages,
         contextItems: this.contextItems,
         targetContextId: this.targetContextId,
@@ -1756,10 +2174,13 @@ class MlxStudioViewProvider {
         pendingConfirmation: this.pendingConfirmation,
         isGenerating: this.isGenerating,
         activePhase: this.activePhase,
+        switchingModelKey: this.switchingModelKey,
+        switchingModelLabel: this.switchingModelLabel,
         systemPrompt: this.systemPrompt,
         vibeMode: this.vibeMode,
       },
     });
+    this.modelsViewProvider?.postState();
   }
 
   async applyCode(code, contextItemId) {
@@ -1876,9 +2297,6 @@ class MlxStudioViewProvider {
     if (this.view) {
       this.view.webview.postMessage(message);
     }
-    if (this.panel) {
-      this.panel.webview.postMessage(message);
-    }
   }
 
   getHtml(webview) {
@@ -1908,18 +2326,28 @@ class MlxStudioViewProvider {
           <span class="brand-name">MLX Studio</span>
         </div>
         <div class="topbar-model">
-          <span class="model-name-text" id="model-name-text">—</span>
+          <div class="model-picker" id="model-picker">
+            <button id="model-picker-button" type="button" class="picker-btn" title="Switch model">
+              <span id="model-picker-label">Select model</span>
+              <span class="picker-chevron">⌄</span>
+            </button>
+            <div id="model-picker-menu" class="picker-menu" hidden></div>
+          </div>
           <span class="runtime-badge" id="runtime-badge" style="display:none">—</span>
         </div>
-        <div class="topbar-actions">
-          <button id="refresh-status" class="icon-btn" type="button" title="Refresh status">↻</button>
-          <button id="start-server" class="icon-btn" type="button" title="Start server">▶</button>
+      <div class="topbar-actions">
+        <button id="toggle-model-manager" class="icon-btn" type="button" title="Manage models">◫</button>
+        <button id="refresh-status" class="icon-btn" type="button" title="Refresh status">↻</button>
+        <button id="server-toggle" class="icon-btn" type="button" title="Start server">▶</button>
         </div>
       </div>
 
       <!-- Thin status strip -->
       <div class="status-strip">
         <span class="status-text" id="status-text">Checking server…</span>
+        <span class="status-progress" id="status-progress" hidden>
+          <span class="status-progress-bar" id="status-progress-bar"></span>
+        </span>
         <span class="status-phase" id="status-phase">Idle</span>
       </div>
 
@@ -1932,6 +2360,7 @@ class MlxStudioViewProvider {
       <div class="composer-card">
         <!-- Context chips (hidden when empty via CSS :empty) -->
         <div id="context-chips" class="context-chips-row"></div>
+        <div id="target-focus" class="target-focus-row" hidden></div>
 
         <div id="pending-confirmation" class="pending-confirmation" hidden></div>
 
@@ -1951,15 +2380,9 @@ class MlxStudioViewProvider {
                 <button id="add-active-file" type="button" class="tool-btn" title="Attach active file">+ File</button>
                 <button id="mention-files" type="button" class="tool-btn" title="Search and attach files with @">@ Files</button>
                 <button id="choose-target-folder" type="button" class="tool-btn" title="Choose folder for new files">+ Folder</button>
-                <div class="divider"></div>
-                <select id="model-select" title="Switch model"></select>
               </div>
               <div class="toolbar-right">
-                <select id="system-prompt-preset" title="System prompt preset">
-                  <option value="default">Default</option>
-                  <option value="coding">Coding</option>
-                </select>
-                <button id="vibe-toggle" type="button" class="tool-btn vibe-toggle-btn" title="Toggle Vibe Coding mode — AI returns code only, ready to apply">⚡ Vibe</button>
+                <button id="vibe-toggle" type="button" class="tool-btn vibe-toggle-btn" title="Toggle edit mode — AI focuses on changing the selected target">Edit</button>
                 <button id="clear-chat" type="button" class="tool-btn">Clear</button>
                 <button id="send-btn" type="submit" class="send-btn" title="Send (Enter)">↑</button>
               </div>
@@ -1979,34 +2402,208 @@ class MlxStudioViewProvider {
   }
 }
 
-function getSidebarRedirectHtml() {
-  return `<!doctype html>
+class MlxStudioModelsViewProvider {
+  constructor(context, host) {
+    this.context = context;
+    this.host = host;
+    this.view = null;
+  }
+
+  resolveWebviewView(webviewView) {
+    this.view = webviewView;
+    this.configureWebview(webviewView.webview);
+    webviewView.onDidDispose(() => {
+      this.view = null;
+    });
+  }
+
+  async revealView() {
+    await vscode.commands.executeCommand("workbench.view.extension.mlxStudioManager");
+    await vscode.commands.executeCommand(`${MODELS_VIEW_ID}.focus`);
+    await this.host.refreshActivity();
+    this.postState();
+  }
+
+  configureWebview(webview) {
+    webview.options = {
+      enableScripts: true,
+      localResourceRoots: [vscode.Uri.joinPath(this.context.extensionUri, "media")],
+    };
+    const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, "media", "models-main.js"));
+    const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, "media", "models.css"));
+    const nonce = String(Date.now());
+    webview.html = `<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline';">
-    <style>
-      body {
-        margin: 0;
-        padding: 20px 16px;
-        font: 12px/1.5 var(--vscode-font-family);
-        color: var(--vscode-descriptionForeground);
-        background: var(--vscode-sideBar-background);
-      }
-      p { margin: 0; }
-    </style>
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src ${webview.cspSource}; script-src 'nonce-${nonce}'; img-src ${webview.cspSource} data:; font-src ${webview.cspSource};"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="${styleUri}">
+    <title>MLX Models</title>
   </head>
   <body>
-    <p>MLX Studio is open on the right →</p>
+    <div class="models-app">
+      <div class="models-shell">
+        <div class="models-header">
+          <div class="models-title">MLX Studio</div>
+          <div class="models-subtitle">Manage local models</div>
+        </div>
+
+        <div id="model-activity" class="model-activity" hidden></div>
+
+        <div class="models-tabs">
+          <button id="tab-installed" type="button" class="models-tab active">Installed</button>
+          <button id="tab-search" type="button" class="models-tab">Search</button>
+        </div>
+      </div>
+
+      <div class="models-content">
+        <div id="installed-panel" class="models-panel">
+          <div class="models-section">
+            <div class="section-title">Installed</div>
+            <div class="models-row">
+              <button id="unload-model-button" type="button" class="manager-btn">Unload Current</button>
+              <button id="open-chat-button" type="button" class="manager-btn">Open Chat</button>
+            </div>
+            <div id="local-models-list" class="model-list"></div>
+          </div>
+        </div>
+
+        <div id="search-panel" class="models-panel" hidden>
+          <div class="models-section">
+            <form id="model-search-form" class="models-row">
+              <input id="model-search-input" class="model-search-input" type="text" placeholder="Search MLX or GGUF models..." />
+              <button id="model-search-button" type="submit" class="manager-btn primary">Search</button>
+            </form>
+            <div class="section-title">Search Results</div>
+            <div id="model-search-results" class="model-list"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <script nonce="${nonce}" src="${scriptUri}"></script>
   </body>
 </html>`;
+
+    webview.onDidReceiveMessage((message) => {
+      this.handleMessage(message).catch((error) => {
+        this.postToWebview({
+          type: "error",
+          message: error instanceof Error ? error.message : String(error),
+        });
+      });
+    });
+  }
+
+  async handleMessage(message) {
+    switch (message.type) {
+      case "ready":
+        await this.host.refreshStatus();
+        await this.host.refreshActivity();
+        this.postState();
+        return;
+      case "search-models":
+        await this.host.searchModels(String(message.query || ""));
+        return;
+      case "download-model":
+        await this.host.downloadModelFromManager(String(message.modelId || ""), String(message.format || "mlx"));
+        return;
+      case "delete-local-model":
+        await this.host.deleteLocalModel(String(message.key || ""));
+        return;
+      case "switch-model":
+        await this.host.switchModel(String(message.key || ""));
+        return;
+      case "unload-model":
+        await this.host.unloadCurrentModel();
+        return;
+      case "cancel-model-download":
+        await this.host.cancelModelDownload();
+        return;
+      case "open-chat":
+        await vscode.commands.executeCommand("mlxStudio.openChat");
+        return;
+      default:
+        return;
+    }
+  }
+
+  postToWebview(message) {
+    if (this.view) {
+      this.view.webview.postMessage(message);
+    }
+  }
+
+  postState() {
+    this.postToWebview({
+      type: "state",
+      payload: {
+        localModels: this.host.localModels,
+        modelSearchResults: this.host.modelSearchResults,
+        modelSearchQuery: this.host.modelSearchQuery,
+        modelActivity: this.host.modelActivity,
+        serverStatus: this.host.serverStatus,
+        switchingModelKey: this.host.switchingModelKey,
+        switchingModelLabel: this.host.switchingModelLabel,
+      },
+    });
+  }
 }
 
 async function startLocalServer(context) {
+  const provider = arguments[1];
   const projectRoot = path.dirname(context.extensionUri.fsPath);
-  const terminal = getOrCreateTerminal(projectRoot);
-  terminal.show(true);
-  terminal.sendText("./scripts/ui.sh --port 8010", true);
+
+  if (isManagedServerRunning()) {
+    ensureServerOutputChannel().show(true);
+    return;
+  }
+
+  const output = ensureServerOutputChannel();
+  output.show(true);
+  output.appendLine(`[MLX Studio] Starting local server on http://127.0.0.1:${SERVER_PORT}`);
+
+  const pythonPath = path.join(projectRoot, ".venv", "bin", "python");
+  managedServerProcess = spawn(
+    pythonPath,
+    ["-m", "uvicorn", "backend.server:app", "--host", "127.0.0.1", "--port", SERVER_PORT],
+    {
+      cwd: projectRoot,
+      env: {
+        ...process.env,
+        PYTHONPATH: projectRoot,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    }
+  );
+
+  managedServerProcess.stdout?.on("data", (chunk) => {
+    output.append(typeof chunk === "string" ? chunk : chunk.toString("utf8"));
+  });
+  managedServerProcess.stderr?.on("data", (chunk) => {
+    output.append(typeof chunk === "string" ? chunk : chunk.toString("utf8"));
+  });
+  managedServerProcess.on("error", (error) => {
+    output.appendLine(`[MLX Studio] Server failed to start: ${error.message}`);
+  });
+  managedServerProcess.on("exit", (code, signal) => {
+    if (managedServerStopTimer) {
+      clearTimeout(managedServerStopTimer);
+      managedServerStopTimer = null;
+    }
+    output.appendLine(`[MLX Studio] Server stopped (${signal || code || 0}).`);
+    managedServerProcess = null;
+    if (provider) {
+      provider.refreshStatus().then(() => provider.postState()).catch(() => {});
+    }
+  });
+
+  if (provider) {
+    provider.refreshStatus().then(() => provider.postState()).catch(() => {});
+  }
 }
 
 function getOrCreateTerminal(cwd) {
@@ -2020,6 +2617,41 @@ function getOrCreateTerminal(cwd) {
   });
 }
 
+async function stopLocalServer(provider) {
+  if (!isManagedServerRunning()) {
+    vscode.window.showInformationMessage("MLX Studio server is not running from this extension.");
+    if (provider) {
+      await provider.refreshStatus();
+      provider.postState();
+    }
+    return;
+  }
+
+  const output = ensureServerOutputChannel();
+  output.appendLine("[MLX Studio] Stopping local server...");
+  const processRef = managedServerProcess;
+  processRef.kill("SIGTERM");
+
+  managedServerStopTimer = setTimeout(() => {
+    if (managedServerProcess === processRef && isManagedServerRunning()) {
+      output.appendLine("[MLX Studio] Force killing local server...");
+      processRef.kill("SIGKILL");
+    }
+  }, 2500);
+
+  if (provider) {
+    await provider.refreshStatus().catch(() => {});
+    provider.postState();
+  }
+}
+
+function ensureServerOutputChannel() {
+  if (!serverOutputChannel) {
+    serverOutputChannel = vscode.window.createOutputChannel("MLX Studio Server");
+  }
+  return serverOutputChannel;
+}
+
 function escapeHtml(value) {
   return value
     .replaceAll("&", "&amp;")
@@ -2031,6 +2663,8 @@ function escapeHtml(value) {
 
 function activate(context) {
   const provider = new MlxStudioViewProvider(context);
+  const modelsProvider = new MlxStudioModelsViewProvider(context, provider);
+  provider.setModelsViewProvider(modelsProvider);
 
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(VIEW_ID, provider, {
@@ -2041,8 +2675,16 @@ function activate(context) {
   );
 
   context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(MODELS_VIEW_ID, modelsProvider, {
+      webviewOptions: {
+        retainContextWhenHidden: true,
+      },
+    })
+  );
+
+  context.subscriptions.push(
     vscode.commands.registerCommand("mlxStudio.openChat", async () => {
-      provider.showPanel();
+      await provider.revealView();
       await provider.refreshStatus();
       provider.postState();
     })
@@ -2050,15 +2692,27 @@ function activate(context) {
 
   context.subscriptions.push(
     vscode.commands.registerCommand("mlxStudio.openChatPanel", async () => {
-      provider.showPanel();
+      await provider.revealView();
       await provider.refreshStatus();
       provider.postState();
     })
   );
 
   context.subscriptions.push(
+    vscode.commands.registerCommand("mlxStudio.openModels", async () => {
+      await modelsProvider.revealView();
+    })
+  );
+
+  context.subscriptions.push(
     vscode.commands.registerCommand("mlxStudio.startLocalServer", async () => {
-      await startLocalServer(context);
+      await startLocalServer(context, provider);
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand("mlxStudio.stopLocalServer", async () => {
+      await stopLocalServer(provider);
     })
   );
 

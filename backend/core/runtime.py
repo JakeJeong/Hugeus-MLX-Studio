@@ -734,6 +734,8 @@ class MlxRuntime:
             )
 
         stop_strings = [item for item in (stop_strings or []) if item]
+        if not getattr(self._tokenizer, "has_chat_template", True):
+            stop_strings = list(dict.fromkeys([*stop_strings, "\nUser:", "\nSystem:"]))
         pending_text = ""
         stopped_on_string = False
 
@@ -916,11 +918,16 @@ class MlxRuntime:
                 **template_kwargs,
             )
         except TypeError:
-            return self._tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True,
-            )
+            try:
+                return self._tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                )
+            except ValueError:
+                return _render_mlx_prompt_fallback(messages, self.model_id)
+        except ValueError:
+            return _render_mlx_prompt_fallback(messages, self.model_id)
 
 
 def build_runtime(runtime_name: str, model_id: str) -> Runtime:
@@ -979,6 +986,32 @@ def _chat_template_kwargs(model_id: str, enable_thinking: bool) -> dict[str, obj
     if "qwen3.5" in lowered or "qwen3_5" in lowered:
         return {"enable_thinking": enable_thinking}
     return {}
+
+
+def _render_mlx_prompt_fallback(messages: list[dict[str, str]], model_id: str) -> str:
+    lowered = model_id.lower()
+    if "gemma-4" in lowered or "gemma4" in lowered:
+        return _render_generic_chat_prompt(messages, assistant_prefix="Assistant")
+    return _render_generic_chat_prompt(messages, assistant_prefix="Assistant")
+
+
+def _render_generic_chat_prompt(
+    messages: list[dict[str, str]],
+    assistant_prefix: str = "Assistant",
+) -> str:
+    lines: list[str] = []
+    for message in messages:
+        role = message.get("role", "user")
+        if role == "system":
+            prefix = "System"
+        elif role == "assistant":
+            prefix = assistant_prefix
+        else:
+            prefix = "User"
+        content = (message.get("content") or "").strip()
+        lines.append(f"{prefix}: {content}")
+    lines.append(f"{assistant_prefix}:")
+    return "\n\n".join(lines)
 
 
 def _patch_llama_chat_formatter(llama_chat_format_module: object) -> None:

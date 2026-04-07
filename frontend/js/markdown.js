@@ -7,8 +7,19 @@ export function escapeHtml(value) {
     .replaceAll("'", "&#39;");
 }
 
+export function stripHiddenReasoningMarkup(text) {
+  return String(text || "")
+    .replace(/\r\n/g, "\n")
+    .replace(/<\|channel\>thought[\s\S]*?(?:<channel\|>|$)\s*/gi, "")
+    .replace(/<think>[\s\S]*?(?:<\/think>|$)\s*/gi, "")
+    .replace(/<\|think\|>[\s\S]*?(?:<\|\/think\|>|<\/think>|$)\s*/gi, "")
+    .replace(/^[ \t]*(?:@@(?:path[ \t]+)?[^\n]+|path:\s*[^\n]+)[ \t]*\n?/gim, "")
+    .replace(/^\s*\n/g, "")
+    .replace(/^\s+/, "");
+}
+
 export function renderMarkdown(text) {
-  const source = text || "";
+  const source = stripHiddenReasoningMarkup(text);
   const fencePattern = /```([\w+-]*)\n?([\s\S]*?)```/g;
   let lastIndex = 0;
   let html = "";

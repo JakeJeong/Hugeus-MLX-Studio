@@ -1,5 +1,5 @@
 import { elements, state } from "./state.js?v=20260328-2";
-import { escapeHtml, renderMarkdown } from "./markdown.js?v=20260328-2";
+import { escapeHtml, renderMarkdown, stripHiddenReasoningMarkup } from "./markdown.js?v=20260328-2";
 
 export function formatMs(value) {
   if (!value && value !== 0) {
@@ -63,7 +63,7 @@ export function renderMessages() {
 
     const content = document.createElement("div");
     content.className = "message-content";
-    content.innerHTML = renderMarkdown(message.content);
+    content.innerHTML = renderMarkdown(message.role === "assistant" ? stripHiddenReasoningMarkup(message.content) : message.content);
 
     bubble.append(label, content);
     stack.appendChild(bubble);
@@ -299,16 +299,17 @@ export function renderLocalModels(models, ggufModels = []) {
     const isGguf = model.format === "gguf";
     const isReady = model.ready !== false;
     const disabled = downloadModelId === model.id || !isReady;
+    const title = model.display_name || model.id;
     const card = document.createElement("article");
     card.className = `info-card model-card ${model.loaded ? "loaded" : ""}`;
     card.innerHTML = `
       <div class="card-top">
         <div>
-          <strong>${escapeHtml(model.id)}</strong>
+          <strong>${escapeHtml(title)}</strong>
           <p>${[
             isGguf ? "GGUF" : "MLX",
             model.size_gb ? `${model.size_gb.toFixed(2)} GB cached` : "Cached locally",
-            isGguf && model.path ? model.path : null,
+            model.path ? model.path : null,
             !isReady && model.error ? model.error : null,
           ].filter(Boolean).join(" · ")}</p>
         </div>

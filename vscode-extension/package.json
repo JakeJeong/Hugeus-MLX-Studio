@@ -13,9 +13,12 @@
   "main": "./extension.js",
   "activationEvents": [
     "onView:mlxStudio.chatView",
+    "onView:mlxStudio.modelsView",
     "onCommand:mlxStudio.openChat",
+    "onCommand:mlxStudio.openModels",
     "onCommand:mlxStudio.openChatPanel",
     "onCommand:mlxStudio.startLocalServer",
+    "onCommand:mlxStudio.stopLocalServer",
     "onCommand:mlxStudio.addActiveFileToChat",
     "onCommand:mlxStudio.addSelectionToChat"
   ],
@@ -23,19 +26,35 @@
     "commands": [
       {
         "command": "mlxStudio.openChat",
-        "title": "MLX Studio: Open Chat"
+        "title": "MLX Studio: Open Chat",
+        "icon": {
+          "light": "media/action-open-light.svg",
+          "dark": "media/action-open-dark.svg"
+        }
       },
       {
         "command": "mlxStudio.openChatPanel",
         "title": "MLX Studio: Open Chat Panel"
       },
       {
+        "command": "mlxStudio.openModels",
+        "title": "MLX Studio: Open Model Manager"
+      },
+      {
         "command": "mlxStudio.startLocalServer",
         "title": "MLX Studio: Start Local Server"
       },
       {
+        "command": "mlxStudio.stopLocalServer",
+        "title": "MLX Studio: Stop Local Server"
+      },
+      {
         "command": "mlxStudio.addActiveFileToChat",
-        "title": "MLX Studio: Add Active File To Chat"
+        "title": "MLX Studio: Add Active File To Chat",
+        "icon": {
+          "light": "media/action-attach-light.svg",
+          "dark": "media/action-attach-dark.svg"
+        }
       },
       {
         "command": "mlxStudio.addSelectionToChat",
@@ -61,6 +80,13 @@
     "viewsContainers": {
       "activitybar": [
         {
+          "id": "mlxStudioManager",
+          "title": "MLX Models",
+          "icon": "media/icon.svg"
+        }
+      ],
+      "secondarySidebar": [
+        {
           "id": "mlxStudio",
           "title": "MLX Studio",
           "icon": "media/icon.svg"
@@ -68,11 +94,33 @@
       ]
     },
     "views": {
+      "mlxStudioManager": [
+        {
+          "type": "webview",
+          "id": "mlxStudio.modelsView",
+          "name": "Models"
+        }
+      ],
       "mlxStudio": [
         {
           "type": "webview",
           "id": "mlxStudio.chatView",
           "name": "Chat"
+        }
+      ]
+    },
+    "menus": {
+      "editor/title": [
+        {
+          "command": "mlxStudio.openChat",
+          "group": "navigation@9"
+        }
+      ],
+      "editor/title/context": [
+        {
+          "command": "mlxStudio.addActiveFileToChat",
+          "group": "navigation@1",
+          "when": "resourceScheme == file"
         }
       ]
     }

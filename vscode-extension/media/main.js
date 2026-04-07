@@ -13,6 +13,10 @@
     isGenerating: false,
     activePhase: null,
     vibeMode: false,
+    modelPickerOpen: false,
+    managedServerRunning: false,
+    switchingModelKey: null,
+    switchingModelLabel: null,
   };
 
   const ui = {
@@ -25,18 +29,27 @@
     mentionSelectedIndex: 0,
     mentionRequestId: 0,
     mentionSearchTimer: null,
+    switchProgressValue: 0,
+    switchProgressTimer: null,
+    switchProgressKey: null,
   };
 
   const el = {
     statusDot: document.querySelector("#status-dot"),
-    modelNameText: document.querySelector("#model-name-text"),
     runtimeBadge: document.querySelector("#runtime-badge"),
     statusText: document.querySelector("#status-text"),
+    statusProgress: document.querySelector("#status-progress"),
+    statusProgressBar: document.querySelector("#status-progress-bar"),
     statusPhase: document.querySelector("#status-phase"),
+    toggleModelManager: document.querySelector("#toggle-model-manager"),
     messages: document.querySelector("#messages"),
     contextChips: document.querySelector("#context-chips"),
+    targetFocus: document.querySelector("#target-focus"),
     pendingConfirmation: document.querySelector("#pending-confirmation"),
-    modelSelect: document.querySelector("#model-select"),
+    modelPicker: document.querySelector("#model-picker"),
+    modelPickerButton: document.querySelector("#model-picker-button"),
+    modelPickerLabel: document.querySelector("#model-picker-label"),
+    modelPickerMenu: document.querySelector("#model-picker-menu"),
     userInput: document.querySelector("#user-input"),
     mentionPicker: document.querySelector("#mention-picker"),
     inputWrapper: document.querySelector(".input-wrapper"),
@@ -45,12 +58,11 @@
     sendBtn: document.querySelector("#send-btn"),
     vibeToggle: document.querySelector("#vibe-toggle"),
     refreshStatus: document.querySelector("#refresh-status"),
-    startServer: document.querySelector("#start-server"),
+    serverToggle: document.querySelector("#server-toggle"),
     addActiveFile: document.querySelector("#add-active-file"),
     mentionFiles: document.querySelector("#mention-files"),
     chooseTargetFolder: document.querySelector("#choose-target-folder"),
     systemPrompt: document.querySelector("#system-prompt"),
-    systemPromptPreset: document.querySelector("#system-prompt-preset"),
   };
 
   /* ── Utilities ────────────────────────────────────────────────────────── */
@@ -82,7 +94,12 @@
   function stripLeadingProtocolMarkup(rawText) {
     return String(rawText || "")
       .replace(/\r\n/g, "\n")
-      .replace(/^(?:[ \t]*\n)*(?:@@(?:path[ \t]+)?[^\n]+|path:\s*[^\n]+)\n*/i, "");
+      .replace(/<\|channel\>thought[\s\S]*?(?:<channel\|>|$)\s*/gi, "")
+      .replace(/<think>[\s\S]*?(?:<\/think>|$)\s*/gi, "")
+      .replace(/<\|think\|>[\s\S]*?(?:<\|\/think\|>|<\/think>|$)\s*/gi, "")
+      .replace(/^[ \t]*(?:@@(?:path[ \t]+)?[^\n]+|path:\s*[^\n]+)[ \t]*\n?/gim, "")
+      .replace(/^\s*\n/g, "")
+      .replace(/^\s+/, "");
   }
 
   function registerCopyPayload(content) {
@@ -581,6 +598,20 @@
         row.appendChild(applyState);
       }
 
+      if (message.proposalStatus) {
+        const proposalState = document.createElement("div");
+        proposalState.className = "message-apply-state";
+        if (message.proposalStatus === "pending") {
+          proposalState.textContent = message.proposalMessage || "Diff preview is ready.";
+        } else if (message.proposalStatus === "applied") {
+          proposalState.textContent = message.proposalMessage || "Proposal applied.";
+        } else {
+          proposalState.textContent = message.proposalMessage || "Proposal dismissed.";
+          proposalState.classList.add("warning");
+        }
+        row.appendChild(proposalState);
+      }
+
       if (message.autoCreated) {
         const createState = document.createElement("div");
         createState.className = "message-apply-state";
@@ -605,20 +636,59 @@
         actions.className = "message-actions";
         let hasActions = false;
 
-        if ((message.requestMode === "edit-file" || message.requestMode === "auto") && editCodeBlock && targetItem) {
-          const applyBtn = document.createElement("button");
-          applyBtn.type = "button";
-          applyBtn.className = "apply-btn" + (message.vibeMode ? " vibe-active" : "");
-          applyBtn.textContent = message.autoApplied ? `↺ Reapply to ${label}` : `↓ Apply to ${label}`;
-          applyBtn.addEventListener("click", () => {
-            vscode.postMessage({
-              type: "apply-code",
-              code: editCodeBlock.code,
-              contextItemId: targetItem.id,
+        if ((message.requestMode === "edit-file" || message.requestMode === "auto") && targetItem) {
+          if (message.proposalId && message.proposalStatus === "pending") {
+            const previewBtn = document.createElement("button");
+            previewBtn.type = "button";
+            previewBtn.className = "apply-btn";
+            previewBtn.textContent = "Preview Diff";
+            previewBtn.addEventListener("click", () => {
+              vscode.postMessage({
+                type: "preview-proposal",
+                proposalId: message.proposalId,
+              });
             });
-          });
-          actions.appendChild(applyBtn);
-          hasActions = true;
+            actions.appendChild(previewBtn);
+
+            const applyBtn = document.createElement("button");
+            applyBtn.type = "button";
+            applyBtn.className = "apply-btn" + (message.vibeMode ? " vibe-active" : "");
+            applyBtn.textContent = `Apply to ${label}`;
+            applyBtn.addEventListener("click", () => {
+              vscode.postMessage({
+                type: "apply-proposal",
+                proposalId: message.proposalId,
+              });
+            });
+            actions.appendChild(applyBtn);
+
+            const rejectBtn = document.createElement("button");
+            rejectBtn.type = "button";
+            rejectBtn.className = "apply-btn";
+            rejectBtn.textContent = "Reject";
+            rejectBtn.addEventListener("click", () => {
+              vscode.postMessage({
+                type: "reject-proposal",
+                proposalId: message.proposalId,
+              });
+            });
+            actions.appendChild(rejectBtn);
+            hasActions = true;
+          } else if (editCodeBlock) {
+            const applyBtn = document.createElement("button");
+            applyBtn.type = "button";
+            applyBtn.className = "apply-btn" + (message.vibeMode ? " vibe-active" : "");
+            applyBtn.textContent = `Apply to ${label}`;
+            applyBtn.addEventListener("click", () => {
+              vscode.postMessage({
+                type: "apply-code",
+                code: editCodeBlock.code,
+                contextItemId: targetItem.id,
+              });
+            });
+            actions.appendChild(applyBtn);
+            hasActions = true;
+          }
         }
 
         if (createCodeBlock) {
@@ -657,7 +727,23 @@
 
   function renderContextChips() {
     el.contextChips.innerHTML = "";
+    el.targetFocus.hidden = true;
+    el.targetFocus.innerHTML = "";
     const targetItem = getTargetContextItem();
+
+    if (targetItem) {
+      el.targetFocus.hidden = false;
+      el.targetFocus.innerHTML = `
+        <span class="target-focus-badge">Target</span>
+        <span class="target-focus-label">${escapeHtml(targetItem.label)}</span>
+        <span class="target-focus-meta">${
+          escapeHtml(
+            state.vibeMode
+              ? "Edits will prefer this target."
+              : "This file is the primary context for the next request."
+          )
+        }</span>`;
+    }
 
     if (state.targetFolder) {
       const folderChip = document.createElement("div");
@@ -752,26 +838,64 @@
     return `${runtime === "llama_cpp" ? "gguf" : runtime}:${modelId}`;
   }
 
+  function currentModelOption() {
+    const selectedKey = currentModelKey();
+    return state.localModels.find((model) => model.key === selectedKey) || state.localModels.find((model) => model.selected) || null;
+  }
+
+  function closeModelPicker() {
+    state.modelPickerOpen = false;
+    renderModelSelect();
+  }
+
+  function toggleModelPicker() {
+    if (state.isGenerating || state.localModels.length === 0) {
+      return;
+    }
+    state.modelPickerOpen = !state.modelPickerOpen;
+    renderModelSelect();
+  }
+
   function renderModelSelect() {
-    el.modelSelect.innerHTML = "";
+    const activeModel = currentModelOption();
+    const label = state.switchingModelLabel || activeModel?.label || (state.localModels.length === 0 ? "No local models" : "Select model");
+    el.modelPickerLabel.textContent = label;
+    el.modelPickerButton.title = state.switchingModelLabel
+      ? `Switching to ${state.switchingModelLabel}...`
+      : activeModel?.tooltip || activeModel?.label || "Switch model";
+    el.modelPickerButton.disabled = state.isGenerating || Boolean(state.switchingModelKey) || state.localModels.length === 0;
+    el.modelPickerButton.classList.toggle("active", state.modelPickerOpen);
+    el.modelPickerButton.classList.toggle("loading", Boolean(state.switchingModelKey));
+    el.modelPickerMenu.hidden = !state.modelPickerOpen;
+    el.modelPickerMenu.innerHTML = "";
+
+    if (!state.modelPickerOpen) {
+      return;
+    }
+
     if (state.localModels.length === 0) {
-      const opt = document.createElement("option");
-      opt.value = "";
-      opt.textContent = "No models";
-      el.modelSelect.appendChild(opt);
-      el.modelSelect.disabled = true;
+      const empty = document.createElement("div");
+      empty.className = "picker-empty";
+      empty.textContent = "No local models found";
+      el.modelPickerMenu.appendChild(empty);
       return;
     }
 
     const selectedKey = currentModelKey();
     for (const model of state.localModels) {
-      const opt = document.createElement("option");
-      opt.value = model.key;
-      opt.textContent = `${model.label} [${model.format}]`;
-      opt.selected = model.key === selectedKey;
-      el.modelSelect.appendChild(opt);
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "picker-item" + (model.key === selectedKey ? " selected" : "");
+      item.dataset.key = model.key;
+      item.title = model.tooltip || model.label || "";
+      item.innerHTML = `
+        <span class="picker-item-main">
+          <span class="picker-item-label">${escapeHtml(model.label)}</span>
+          <span class="picker-item-meta">${escapeHtml(model.format)}${model.detail ? ` · ${escapeHtml(model.detail)}` : ""}</span>
+        </span>
+        <span class="picker-item-check">${model.key === selectedKey ? "✓" : ""}</span>`;
+      el.modelPickerMenu.appendChild(item);
     }
-    el.modelSelect.disabled = state.isGenerating;
   }
 
   /* ── Render: vibe mode ────────────────────────────────────────────────── */
@@ -779,12 +903,23 @@
   function renderVibeMode() {
     el.vibeToggle.classList.toggle("active", state.vibeMode);
     el.inputWrapper.classList.toggle("vibe-active", state.vibeMode);
+    el.vibeToggle.textContent = state.vibeMode ? "Editing" : "Edit";
+    el.vibeToggle.title = state.vibeMode
+      ? "Edit mode is on — the assistant will prefer changing the current target."
+      : "Turn on edit mode for direct code changes.";
     if (state.vibeMode && state.targetFolder && !getTargetContextItem()) {
       el.userInput.placeholder = `Describe the file to create in ${state.targetFolder.label}…`;
       return;
     }
-    el.userInput.placeholder = state.vibeMode
-      ? "Describe the change you want to make… Active editor is used if no target is attached."
+    const targetItem = getTargetContextItem();
+    if (state.vibeMode) {
+      el.userInput.placeholder = targetItem
+        ? `Describe the change for ${targetItem.label}…`
+        : "Describe the change you want to make… Active editor is used if no target is attached.";
+      return;
+    }
+    el.userInput.placeholder = targetItem
+      ? `Ask about ${targetItem.label} or describe a change…`
       : "Message MLX Studio…";
   }
 
@@ -794,47 +929,106 @@
     const s = state.serverStatus;
     const available = s?.available === true;
     const blockedByConfirmation = Boolean(state.pendingConfirmation);
+    const isSwitchingModel = Boolean(state.switchingModelKey);
 
     // Status dot
     el.statusDot.className = "status-dot " + (available ? "online" : s ? "offline" : "");
 
-    // Model name + runtime badge
-    el.modelNameText.textContent = available ? (s.model_id || "—") : "—";
+    // Runtime badge
     el.runtimeBadge.textContent = available ? (s.runtime || "—") : "—";
     el.runtimeBadge.style.display = available ? "" : "none";
 
     // Status strip text
     if (!s) {
       el.statusText.textContent = "Checking server…";
+    } else if (isSwitchingModel) {
+      el.statusText.textContent = `Switching to ${state.switchingModelLabel || "selected model"}…`;
     } else if (!available) {
       el.statusText.textContent = s.error
         ? `Offline — ${s.error}`
         : "Server offline — run ./scripts/ui.sh --port 8010";
     } else {
-      el.statusText.textContent = `Connected · ${s.runtime || ""}`;
+      el.statusText.textContent = "Connected";
     }
+
+    el.serverToggle.textContent = state.managedServerRunning ? "■" : "▶";
+    el.serverToggle.title = state.managedServerRunning ? "Stop local server" : "Start local server";
+    el.serverToggle.classList.toggle("running", state.managedServerRunning);
 
     // Phase badge
     const phase = state.activePhase;
     const running = state.isGenerating;
-    el.statusPhase.textContent = phase || (running ? "Running" : "Idle");
-    el.statusPhase.className = "status-phase" + (running ? " running" : "");
+    el.statusPhase.textContent = isSwitchingModel ? "Loading" : phase || (running ? "Running" : "Idle");
+    el.statusPhase.className = "status-phase" + (running || isSwitchingModel ? " running" : "");
 
     // Disable input during generation
-    el.sendBtn.disabled = running || blockedByConfirmation;
-    el.userInput.disabled = running || blockedByConfirmation;
+    el.sendBtn.disabled = running || blockedByConfirmation || isSwitchingModel;
+    el.userInput.disabled = running || blockedByConfirmation || isSwitchingModel;
     if (el.mentionFiles) {
-      el.mentionFiles.disabled = running || blockedByConfirmation;
+      el.mentionFiles.disabled = running || blockedByConfirmation || isSwitchingModel;
     }
-    if (running || blockedByConfirmation) {
+    if (running || blockedByConfirmation || isSwitchingModel) {
       hideMentionPicker();
     }
+  }
+
+  function stopSwitchProgress() {
+    if (ui.switchProgressTimer) {
+      window.clearInterval(ui.switchProgressTimer);
+      ui.switchProgressTimer = null;
+    }
+  }
+
+  function renderSwitchProgress() {
+    const visible = ui.switchProgressValue > 0.5;
+    el.statusProgress.hidden = !visible;
+    el.statusProgressBar.style.width = `${Math.max(0, Math.min(100, ui.switchProgressValue))}%`;
+  }
+
+  function syncSwitchProgress() {
+    if (state.switchingModelKey) {
+      if (ui.switchProgressKey !== state.switchingModelKey) {
+        ui.switchProgressKey = state.switchingModelKey;
+        ui.switchProgressValue = 12;
+        stopSwitchProgress();
+        ui.switchProgressTimer = window.setInterval(() => {
+          if (ui.switchProgressValue < 28) {
+            ui.switchProgressValue += 3.5;
+          } else if (ui.switchProgressValue < 55) {
+            ui.switchProgressValue += 1.8;
+          } else if (ui.switchProgressValue < 78) {
+            ui.switchProgressValue += 0.9;
+          } else if (ui.switchProgressValue < 88) {
+            ui.switchProgressValue += 0.22;
+          }
+          renderSwitchProgress();
+        }, 140);
+      }
+      renderSwitchProgress();
+      return;
+    }
+
+    if (ui.switchProgressKey) {
+      stopSwitchProgress();
+      ui.switchProgressKey = null;
+      ui.switchProgressValue = 100;
+      renderSwitchProgress();
+      window.setTimeout(() => {
+        ui.switchProgressValue = 0;
+        renderSwitchProgress();
+      }, 280);
+      return;
+    }
+
+    ui.switchProgressValue = 0;
+    renderSwitchProgress();
   }
 
   /* ── Render all ───────────────────────────────────────────────────────── */
 
   function renderAll() {
     el.systemPrompt.value = state.systemPrompt || "";
+    syncSwitchProgress();
     renderStatus();
     renderVibeMode();
     renderModelSelect();
@@ -860,6 +1054,10 @@
       state.isGenerating = Boolean(payload.isGenerating);
       state.activePhase = payload.activePhase || null;
       state.vibeMode = Boolean(payload.vibeMode);
+      state.switchingModelKey = payload.switchingModelKey || null;
+      state.switchingModelLabel = payload.switchingModelLabel || null;
+      state.modelPickerOpen = false;
+      state.managedServerRunning = Boolean(payload.managedServerRunning);
       renderAll();
       vscode.setState(state);
     }
@@ -997,13 +1195,29 @@
     vscode.postMessage({ type: "refresh-status" });
   });
 
-  el.startServer.addEventListener("click", () => {
-    vscode.postMessage({ type: "start-server" });
+  el.serverToggle.addEventListener("click", () => {
+    vscode.postMessage({ type: state.managedServerRunning ? "stop-server" : "start-server" });
   });
 
-  el.modelSelect.addEventListener("change", () => {
-    if (!el.modelSelect.value) return;
-    vscode.postMessage({ type: "switch-model", key: el.modelSelect.value });
+  el.modelPickerButton.addEventListener("click", () => {
+    toggleModelPicker();
+  });
+
+  el.toggleModelManager.addEventListener("click", () => {
+    vscode.postMessage({ type: "toggle-model-manager" });
+  });
+
+  el.modelPickerMenu.addEventListener("click", (event) => {
+    const item = event.target.closest(".picker-item");
+    if (!item) {
+      return;
+    }
+    const key = item.dataset.key;
+    if (!key) {
+      return;
+    }
+    closeModelPicker();
+    vscode.postMessage({ type: "switch-model", key });
   });
 
   el.addActiveFile.addEventListener("click", () => {
@@ -1052,24 +1266,24 @@
     vscode.postMessage({ type: "set-system-prompt", value: el.systemPrompt.value });
   });
 
-  el.systemPromptPreset.addEventListener("change", () => {
-    if (el.systemPromptPreset.value === "coding") {
-      el.systemPrompt.value =
-        "You are a careful coding assistant. If you are unsure about an API, framework, or acronym, say you are unsure instead of guessing. Keep answers factual, practical, and in the user's language.";
-    } else {
-      el.systemPrompt.value =
-        "You are a helpful local assistant. Answer clearly, stay concise, and match the user's language.";
-    }
-    vscode.postMessage({ type: "set-system-prompt", value: el.systemPrompt.value });
-  });
-
   /* ── Init ─────────────────────────────────────────────────────────────── */
 
   const previous = vscode.getState();
   if (previous) {
     Object.assign(state, previous);
+    state.modelPickerOpen = false;
     renderAll();
   }
+
+  window.addEventListener("click", (event) => {
+    if (!state.modelPickerOpen) {
+      return;
+    }
+    if (event.target.closest("#model-picker")) {
+      return;
+    }
+    closeModelPicker();
+  });
 
   vscode.postMessage({ type: "ready" });
 })();
