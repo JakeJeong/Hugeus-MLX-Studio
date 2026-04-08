@@ -1,5 +1,6 @@
 (function () {
   const vscode = acquireVsCodeApi();
+  const persistedState = vscode.getState() || {};
 
   const state = {
     localModels: [],
@@ -7,13 +8,22 @@
     modelSearchQuery: "",
     modelActivity: null,
     serverStatus: null,
+    network: null,
+    libraries: null,
     switchingModelKey: null,
     switchingModelLabel: null,
-    activeTab: "installed",
+    activeTab: persistedState.activeTab === "search" ? "search" : "installed",
+    errorMessage: "",
+  };
+
+  const ui = {
+    tlsUploadPending: false,
+    tlsDragOver: false,
   };
 
   const el = {
     activity: document.querySelector("#model-activity"),
+    errorBanner: document.querySelector("#models-error-banner"),
     tabInstalled: document.querySelector("#tab-installed"),
     tabSearch: document.querySelector("#tab-search"),
     installedPanel: document.querySelector("#installed-panel"),
@@ -23,8 +33,18 @@
     searchButton: document.querySelector("#model-search-button"),
     unloadButton: document.querySelector("#unload-model-button"),
     openChatButton: document.querySelector("#open-chat-button"),
+    addModelLibraryButton: document.querySelector("#add-model-library-button"),
     localModelsList: document.querySelector("#local-models-list"),
+    modelLibraryList: document.querySelector("#model-library-list"),
     searchResults: document.querySelector("#model-search-results"),
+    tlsCertStatus: document.querySelector("#tls-cert-status"),
+    tlsCertTitle: document.querySelector("#tls-cert-title"),
+    tlsCertDetail: document.querySelector("#tls-cert-detail"),
+    tlsCertMeta: document.querySelector("#tls-cert-meta"),
+    tlsCertDropzone: document.querySelector("#tls-cert-dropzone"),
+    tlsCertInput: document.querySelector("#tls-cert-input"),
+    tlsCertChooseButton: document.querySelector("#tls-cert-choose-button"),
+    tlsCertClearButton: document.querySelector("#tls-cert-clear-button"),
   };
 
   function escapeHtml(value) {
@@ -109,6 +129,67 @@
     return Boolean(state.switchingModelKey && state.switchingModelKey === model.key);
   }
 
+  function basenameOfPath(value) {
+    const normalized = String(value || "").trim().replace(/\\/g, "/").replace(/\/+$/, "");
+    if (!normalized) {
+      return "";
+    }
+    const parts = normalized.split("/").filter(Boolean);
+    return parts[parts.length - 1] || normalized;
+  }
+
+  function setError(message) {
+    state.errorMessage = String(message || "").trim();
+    renderAll();
+  }
+
+  function handleTlsFile(file) {
+    if (!file) {
+      return;
+    }
+
+    const reader = new FileReader();
+    ui.tlsUploadPending = true;
+    state.errorMessage = "";
+    renderAll();
+
+    reader.onload = () => {
+      const content = typeof reader.result === "string" ? reader.result : "";
+      if (!content.trim()) {
+        ui.tlsUploadPending = false;
+        setError("Certificate file is empty.");
+        return;
+      }
+
+      vscode.postMessage({
+        type: "upload-tls-certificate",
+        filename: file.name || "custom-root-ca.pem",
+        content,
+      });
+    };
+
+    reader.onerror = () => {
+      ui.tlsUploadPending = false;
+      setError("Failed to read the selected PEM file.");
+    };
+
+    reader.readAsText(file);
+  }
+
+  function renderBanner() {
+    if (!state.errorMessage) {
+      el.errorBanner.hidden = true;
+      el.errorBanner.innerHTML = "";
+      return;
+    }
+
+    el.errorBanner.hidden = false;
+    el.errorBanner.innerHTML = `
+      <div class="models-banner-text">${escapeHtml(state.errorMessage)}</div>
+      <button type="button" class="manager-btn subtle" data-action="dismiss-error">Dismiss</button>
+    `;
+  }
+
   function renderActivity() {
     const activity = state.modelActivity;
     if (!activity?.active) {
@@ -128,6 +209,56 @@
       </div>
       <button type="button" class="manager-btn subtle" data-action="cancel-download">Cancel</button>
     `;
+  }
+
+  function renderTlsStatus() {
+    const serverAvailable = Boolean(state.serverStatus) && state.serverStatus.available !== false;
+    const network = state.network || state.serverStatus?.network || null;
+    const customConfigured = Boolean(network?.custom_ca_bundle_configured);
+
+    let title = "Using default CA bundle";
+    let detail = "Nothing extra is required on most networks. Import a company PEM only if HTTPS inspection breaks remote model search or download.";
+    let meta = "";
+
+    if (!serverAvailable) {
+      title = "Server offline";
+      detail = state.serverStatus?.error
+        ? String(state.serverStatus.error)
+        : "Start the MLX Studio server to configure network trust for model search.";
+    } else if (ui.tlsUploadPending) {
+      title = "Uploading PEM bundle";
+      detail = "Applying the certificate and refreshing remote model access...";
+    } else if (customConfigured) {
+      title = network.custom_ca_bundle_name
+        ? `Custom PEM: ${network.custom_ca_bundle_name}`
+        : "Custom PEM configured";
+      detail = "This bundle is merged with the default public CA roots, so normal HTTPS still works.";
+      meta = [network.source ? `Source: ${network.source}` : "", network.effective_ca_bundle_path || ""]
+        .filter(Boolean)
+        .join(" · ");
+    } else if (network?.source === "environment") {
+      title = "Using shell CA bundle";
+      detail = "The server inherited SSL_CERT_FILE or REQUESTS_CA_BUNDLE from the environment. You can still import a PEM here if that is easier.";
+      meta = network.effective_ca_bundle_path || "";
+    }
+
+    el.tlsCertTitle.textContent = title;
+    el.tlsCertDetail.textContent = detail;
+    el.tlsCertMeta.textContent = meta;
+    el.tlsCertMeta.hidden = !meta;
+
+    el.tlsCertStatus.classList.toggle("configured", customConfigured);
+    el.tlsCertStatus.classList.toggle("offline", !serverAvailable);
+    el.tlsCertStatus.classList.toggle("pending", ui.tlsUploadPending);
+
+    el.tlsCertDropzone.classList.toggle("drag-over", ui.tlsDragOver);
+    el.tlsCertDropzone.classList.toggle("is-disabled", !serverAvailable || ui.tlsUploadPending);
+    el.tlsCertDropzone.textContent = ui.tlsUploadPending
+      ? "Uploading PEM bundle..."
+      : "Drop a PEM bundle here or choose a file";
+
+    el.tlsCertChooseButton.disabled = !serverAvailable || ui.tlsUploadPending;
+    el.tlsCertClearButton.disabled = !customConfigured || ui.tlsUploadPending;
   }
 
   function setActiveTab(tab) {
@@ -166,6 +297,45 @@
             <div class="model-card-actions">
               <button type="button" class="manager-btn" data-action="switch-local" data-key="${escapeHtml(model.key)}" ${actionDisabled}>${escapeHtml(actionLabel)}</button>
               <button type="button" class="manager-btn danger" data-action="delete-local" data-key="${escapeHtml(model.key)}">Delete</button>
+            </div>
+          </div>
+        `;
+      })
+      .join("");
+  }
+
+  function renderLibraries() {
+    const libraries = Array.isArray(state.libraries?.custom_model_roots)
+      ? state.libraries.custom_model_roots
+      : [];
+
+    if (libraries.length === 0) {
+      el.modelLibraryList.innerHTML = `
+        <div class="model-list-empty">
+          Using only the default LM Studio and Hugging Face cache paths. Add a folder if your models live elsewhere.
+        </div>
+      `;
+      return;
+    }
+
+    el.modelLibraryList.innerHTML = libraries
+      .map((item) => {
+        const libraryPath = String(item.path || "").trim();
+        const title = String(item.label || "").trim() || basenameOfPath(libraryPath) || "Model library";
+        return `
+          <div class="model-card library-card">
+            <div class="model-card-main" title="${escapeHtml(libraryPath)}">
+              <div class="model-card-title">${escapeHtml(title)}</div>
+              <div class="model-card-subtitle">${escapeHtml(libraryPath)}</div>
+              <div class="model-card-meta">Custom model library</div>
+            </div>
+            <div class="model-card-actions">
+              <button
+                type="button"
+                class="manager-btn danger"
+                data-action="remove-model-library"
+                data-path="${escapeHtml(libraryPath)}"
+              >Remove</button>
             </div>
           </div>
         `;
@@ -218,31 +388,51 @@
     el.installedPanel.hidden = state.activeTab !== "installed";
     el.searchPanel.hidden = state.activeTab !== "search";
     el.searchInput.value = state.modelSearchQuery || "";
+    renderBanner();
     renderActivity();
+    renderTlsStatus();
     renderLocalModels();
+    renderLibraries();
     renderSearchResults();
+    vscode.setState({
+      activeTab: state.activeTab,
+      network: state.network,
+      libraries: state.libraries,
+      errorMessage: state.errorMessage,
+    });
   }
 
   function submitSearch() {
     const query = el.searchInput.value.trim();
+    state.errorMessage = "";
     setActiveTab("search");
     vscode.postMessage({ type: "search-models", query });
   }
 
   window.addEventListener("message", (event) => {
-    const { type, payload } = event.data || {};
-    if (type !== "state") {
+    const { type, payload, message } = event.data || {};
+    if (type === "state") {
+      state.localModels = payload.localModels || [];
+      state.modelSearchResults = payload.modelSearchResults || [];
+      state.modelSearchQuery = payload.modelSearchQuery || "";
+      state.modelActivity = payload.modelActivity || null;
+      state.serverStatus = payload.serverStatus || null;
+      state.network = payload.network || payload.serverStatus?.network || null;
+      state.libraries = payload.libraries || payload.serverStatus?.libraries || null;
+      state.switchingModelKey = payload.switchingModelKey || null;
+      state.switchingModelLabel = payload.switchingModelLabel || null;
+      state.errorMessage = "";
+      ui.tlsUploadPending = false;
+      ui.tlsDragOver = false;
+      renderAll();
       return;
     }
-    state.localModels = payload.localModels || [];
-    state.modelSearchResults = payload.modelSearchResults || [];
-    state.modelSearchQuery = payload.modelSearchQuery || "";
-    state.modelActivity = payload.modelActivity || null;
-    state.serverStatus = payload.serverStatus || null;
-    state.switchingModelKey = payload.switchingModelKey || null;
-    state.switchingModelLabel = payload.switchingModelLabel || null;
-    renderAll();
-    vscode.setState(state);
+
+    if (type === "error") {
+      ui.tlsUploadPending = false;
+      ui.tlsDragOver = false;
+      setError(message || "Something went wrong.");
+    }
   });
 
   el.searchButton.addEventListener("click", () => {
@@ -277,12 +467,95 @@
     vscode.postMessage({ type: "open-chat" });
   });
 
+  el.addModelLibraryButton.addEventListener("click", () => {
+    state.errorMessage = "";
+    renderAll();
+    vscode.postMessage({ type: "choose-model-library-folder" });
+  });
+
+  el.tlsCertChooseButton.addEventListener("click", () => {
+    if (el.tlsCertChooseButton.disabled) {
+      return;
+    }
+    el.tlsCertInput.value = "";
+    el.tlsCertInput.click();
+  });
+
+  el.tlsCertInput.addEventListener("change", (event) => {
+    const file = event.target.files && event.target.files[0];
+    handleTlsFile(file);
+    event.target.value = "";
+  });
+
+  el.tlsCertDropzone.addEventListener("click", () => {
+    if (el.tlsCertChooseButton.disabled) {
+      return;
+    }
+    el.tlsCertInput.value = "";
+    el.tlsCertInput.click();
+  });
+
+  el.tlsCertDropzone.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") {
+      return;
+    }
+    event.preventDefault();
+    if (el.tlsCertChooseButton.disabled) {
+      return;
+    }
+    el.tlsCertInput.value = "";
+    el.tlsCertInput.click();
+  });
+
+  for (const eventName of ["dragenter", "dragover"]) {
+    el.tlsCertDropzone.addEventListener(eventName, (event) => {
+      event.preventDefault();
+      if (el.tlsCertChooseButton.disabled) {
+        return;
+      }
+      ui.tlsDragOver = true;
+      renderTlsStatus();
+    });
+  }
+
+  el.tlsCertDropzone.addEventListener("dragleave", (event) => {
+    event.preventDefault();
+    ui.tlsDragOver = false;
+    renderTlsStatus();
+  });
+
+  el.tlsCertDropzone.addEventListener("drop", (event) => {
+    event.preventDefault();
+    ui.tlsDragOver = false;
+    renderTlsStatus();
+    if (el.tlsCertChooseButton.disabled) {
+      return;
+    }
+    const file = event.dataTransfer?.files && event.dataTransfer.files[0];
+    handleTlsFile(file);
+  });
+
+  el.tlsCertClearButton.addEventListener("click", () => {
+    if (el.tlsCertClearButton.disabled) {
+      return;
+    }
+    ui.tlsUploadPending = true;
+    state.errorMessage = "";
+    renderAll();
+    vscode.postMessage({ type: "clear-tls-certificate" });
+  });
+
   document.body.addEventListener("click", (event) => {
     const action = event.target.closest("[data-action]");
     if (!action) {
       return;
     }
     const type = action.getAttribute("data-action");
+    if (type === "dismiss-error") {
+      state.errorMessage = "";
+      renderAll();
+      return;
+    }
     if (type === "cancel-download") {
       vscode.postMessage({ type: "cancel-model-download" });
       return;
@@ -295,6 +568,13 @@
       vscode.postMessage({ type: "delete-local-model", key: action.getAttribute("data-key") || "" });
       return;
     }
+    if (type === "remove-model-library") {
+      vscode.postMessage({
+        type: "remove-model-library-folder",
+        path: action.getAttribute("data-path") || "",
+      });
+      return;
+    }
     if (type === "download-model") {
       vscode.postMessage({
         type: "download-model",
@@ -304,5 +584,6 @@
     }
   });
 
+  renderAll();
   vscode.postMessage({ type: "ready" });
 })();

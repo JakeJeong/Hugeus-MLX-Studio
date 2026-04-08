@@ -17,6 +17,13 @@
     managedServerRunning: false,
     switchingModelKey: null,
     switchingModelLabel: null,
+    generationSettings: null,
+    settingsOpen: false,
+    settingsDraft: null,
+    settingsDirty: false,
+    settingsSaving: false,
+    settingsError: "",
+    settingsNotice: "",
   };
 
   const ui = {
@@ -41,6 +48,21 @@
     statusProgress: document.querySelector("#status-progress"),
     statusProgressBar: document.querySelector("#status-progress-bar"),
     statusPhase: document.querySelector("#status-phase"),
+    toggleSettings: document.querySelector("#toggle-settings"),
+    settingsButtonLabel: document.querySelector("#settings-button-label"),
+    settingsPanel: document.querySelector("#settings-panel"),
+    settingsPanelStatus: document.querySelector("#settings-panel-status"),
+    settingsPanelNote: document.querySelector("#settings-panel-note"),
+    settingsMaxTokens: document.querySelector("#settings-max-tokens"),
+    settingsTemperature: document.querySelector("#settings-temperature"),
+    settingsTopP: document.querySelector("#settings-top-p"),
+    settingsMinP: document.querySelector("#settings-min-p"),
+    settingsTopK: document.querySelector("#settings-top-k"),
+    settingsRepeatPenalty: document.querySelector("#settings-repeat-penalty"),
+    settingsRepeatContextSize: document.querySelector("#settings-repeat-context-size"),
+    settingsEnableThinking: document.querySelector("#settings-enable-thinking"),
+    resetSettings: document.querySelector("#reset-settings"),
+    saveSettings: document.querySelector("#save-settings"),
     toggleModelManager: document.querySelector("#toggle-model-manager"),
     messages: document.querySelector("#messages"),
     contextChips: document.querySelector("#context-chips"),
@@ -65,6 +87,17 @@
     systemPrompt: document.querySelector("#system-prompt"),
   };
 
+  const DEFAULT_GENERATION_SETTINGS = Object.freeze({
+    maxTokens: 512,
+    temperature: 0,
+    topP: 0.95,
+    minP: 0,
+    topK: 40,
+    repeatPenalty: 1.05,
+    repeatContextSize: 64,
+    enableThinking: false,
+  });
+
   /* ── Utilities ────────────────────────────────────────────────────────── */
 
   function escapeHtml(value) {
@@ -74,6 +107,128 @@
       .replaceAll(">", "&gt;")
       .replaceAll('"', "&quot;")
       .replaceAll("'", "&#39;");
+  }
+
+  function asBoundedInteger(value, fallback, min, max) {
+    const parsed = Number(value);
+    if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
+      return fallback;
+    }
+    return parsed;
+  }
+
+  function asBoundedNumber(value, fallback, min, max) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed < min || parsed > max) {
+      return fallback;
+    }
+    return parsed;
+  }
+
+  function appliedGenerationSettings() {
+    const source = state.generationSettings || state.serverStatus || {};
+    return {
+      maxTokens: asBoundedInteger(source.maxTokens ?? source.max_tokens, DEFAULT_GENERATION_SETTINGS.maxTokens, 1, 4096),
+      temperature: asBoundedNumber(source.temperature, DEFAULT_GENERATION_SETTINGS.temperature, 0, 2),
+      topP: asBoundedNumber(source.topP ?? source.top_p, DEFAULT_GENERATION_SETTINGS.topP, 0, 1),
+      minP: asBoundedNumber(source.minP ?? source.min_p, DEFAULT_GENERATION_SETTINGS.minP, 0, 1),
+      topK: asBoundedInteger(source.topK ?? source.top_k, DEFAULT_GENERATION_SETTINGS.topK, 0, 500),
+      repeatPenalty: asBoundedNumber(
+        source.repeatPenalty ?? source.repeat_penalty,
+        DEFAULT_GENERATION_SETTINGS.repeatPenalty,
+        0,
+        3
+      ),
+      repeatContextSize: asBoundedInteger(
+        source.repeatContextSize ?? source.repeat_context_size,
+        DEFAULT_GENERATION_SETTINGS.repeatContextSize,
+        0,
+        4096
+      ),
+      enableThinking: Boolean(source.enableThinking ?? source.enable_thinking),
+    };
+  }
+
+  function serializeGenerationSettings(settings) {
+    const source = settings || appliedGenerationSettings();
+    return {
+      maxTokens: String(source.maxTokens),
+      temperature: String(source.temperature),
+      topP: String(source.topP),
+      minP: String(source.minP),
+      topK: String(source.topK),
+      repeatPenalty: String(source.repeatPenalty),
+      repeatContextSize: String(source.repeatContextSize),
+      enableThinking: Boolean(source.enableThinking),
+    };
+  }
+
+  function syncSettingsDraft(force = false) {
+    if (force || !state.settingsDirty || !state.settingsDraft) {
+      state.settingsDraft = serializeGenerationSettings(appliedGenerationSettings());
+    }
+  }
+
+  function captureSettingsDraftFromInputs() {
+    state.settingsDraft = {
+      maxTokens: el.settingsMaxTokens.value,
+      temperature: el.settingsTemperature.value,
+      topP: el.settingsTopP.value,
+      minP: el.settingsMinP.value,
+      topK: el.settingsTopK.value,
+      repeatPenalty: el.settingsRepeatPenalty.value,
+      repeatContextSize: el.settingsRepeatContextSize.value,
+      enableThinking: Boolean(el.settingsEnableThinking.checked),
+    };
+    state.settingsDirty = true;
+    state.settingsSaving = false;
+    state.settingsError = "";
+    state.settingsNotice = "";
+  }
+
+  function parseSettingsDraft() {
+    const draft = state.settingsDraft || serializeGenerationSettings();
+    const maxTokens = Number(draft.maxTokens);
+    const temperature = Number(draft.temperature);
+    const topP = Number(draft.topP);
+    const minP = Number(draft.minP);
+    const topK = Number(draft.topK);
+    const repeatPenalty = Number(draft.repeatPenalty);
+    const repeatContextSize = Number(draft.repeatContextSize);
+    const enableThinking = Boolean(draft.enableThinking);
+
+    if (!Number.isInteger(maxTokens) || maxTokens < 1 || maxTokens > 4096) {
+      throw new Error("Max Tokens must be an integer between 1 and 4096.");
+    }
+    if (!Number.isFinite(temperature) || temperature < 0 || temperature > 2) {
+      throw new Error("Temperature must be between 0.0 and 2.0.");
+    }
+    if (!Number.isFinite(topP) || topP < 0 || topP > 1) {
+      throw new Error("Top P must be between 0.0 and 1.0.");
+    }
+    if (!Number.isFinite(minP) || minP < 0 || minP > 1) {
+      throw new Error("Min P must be between 0.0 and 1.0.");
+    }
+    if (!Number.isInteger(topK) || topK < 0 || topK > 500) {
+      throw new Error("Top K must be an integer between 0 and 500.");
+    }
+    if (!Number.isFinite(repeatPenalty) || repeatPenalty < 0 || repeatPenalty > 3) {
+      throw new Error("Repeat Penalty must be between 0.0 and 3.0.");
+    }
+    if (!Number.isInteger(repeatContextSize) || repeatContextSize < 0 || repeatContextSize > 4096) {
+      throw new Error("Repeat Window must be an integer between 0 and 4096.");
+    }
+
+    return {
+      maxTokens,
+      temperature,
+      topP,
+      minP,
+      topK,
+      repeatPenalty,
+      repeatContextSize,
+      enableThinking,
+    };
   }
 
   function renderInline(text) {
@@ -92,6 +247,62 @@
   }
 
   function stripLeadingProtocolMarkup(rawText) {
+    return stripAuxiliaryProtocolMarkup(extractVisibleAssistantText(rawText));
+  }
+
+  function extractVisibleAssistantText(rawText) {
+    const normalized = String(rawText || "").replace(/\r\n/g, "\n");
+    if (!normalized.includes("<|channel|>") && !normalized.includes("<|message|>") && !normalized.includes("<|start|>")) {
+      return normalized;
+    }
+
+    const markerPattern = /<\|channel\|>([^<\r\n]+?)<\|message\|>/gi;
+    const markers = Array.from(normalized.matchAll(markerPattern));
+    if (markers.length === 0) {
+      return "";
+    }
+
+    const preferred = [];
+    const fallback = [];
+    for (let index = 0; index < markers.length; index += 1) {
+      const match = markers[index];
+      const channel = String(match[1] || "").trim().toLowerCase();
+      const start = match.index + match[0].length;
+      const end = index + 1 < markers.length ? markers[index + 1].index : normalized.length;
+      const segment = truncateAtProtocolBoundary(normalized.slice(start, end));
+      if (channel === "final") {
+        preferred.push(segment);
+      } else if (!["analysis", "thought", "commentary"].includes(channel)) {
+        fallback.push(segment);
+      }
+    }
+
+    if (preferred.length > 0) {
+      return preferred.join("").replace(/^\n+/, "");
+    }
+    if (fallback.length > 0) {
+      return fallback.join("").replace(/^\n+/, "");
+    }
+    return "";
+  }
+
+  function truncateAtProtocolBoundary(text) {
+    const source = String(text || "");
+    const markers = ["<|start|>", "<|end|>", "<|channel|>", "<|message|>"];
+    let earliest = -1;
+    for (const marker of markers) {
+      const index = source.indexOf(marker);
+      if (index === -1) {
+        continue;
+      }
+      if (earliest === -1 || index < earliest) {
+        earliest = index;
+      }
+    }
+    return earliest === -1 ? source : source.slice(0, earliest);
+  }
+
+  function stripAuxiliaryProtocolMarkup(rawText) {
     return String(rawText || "")
       .replace(/\r\n/g, "\n")
       .replace(/<\|channel\>thought[\s\S]*?(?:<channel\|>|$)\s*/gi, "")
@@ -274,6 +485,22 @@
   function resizeUserInput() {
     el.userInput.style.height = "auto";
     el.userInput.style.height = Math.min(el.userInput.scrollHeight, 200) + "px";
+  }
+
+  function refocusComposer() {
+    window.requestAnimationFrame(() => {
+      if (!el.userInput || el.userInput.disabled) {
+        return;
+      }
+      el.userInput.focus();
+      const caret = el.userInput.value.length;
+      el.userInput.setSelectionRange(caret, caret);
+    });
+  }
+
+  function closeSettingsPanel() {
+    state.settingsOpen = false;
+    renderSettings();
   }
 
   function hideMentionPicker() {
@@ -898,6 +1125,50 @@
     }
   }
 
+  function renderSettings() {
+    syncSettingsDraft(false);
+    const applied = appliedGenerationSettings();
+    const draft = state.settingsDraft || serializeGenerationSettings(applied);
+    const maxTokenLabel = String((state.settingsDirty ? draft.maxTokens : applied.maxTokens) || "").trim();
+
+    el.settingsButtonLabel.textContent = /^\d+$/.test(maxTokenLabel) ? `${maxTokenLabel} tok` : "Settings";
+    el.toggleSettings.classList.toggle("active", state.settingsOpen);
+    el.toggleSettings.title = `Generation settings · ${applied.maxTokens} max tokens`;
+    el.settingsPanel.hidden = !state.settingsOpen;
+
+    el.settingsMaxTokens.value = draft.maxTokens;
+    el.settingsTemperature.value = draft.temperature;
+    el.settingsTopP.value = draft.topP;
+    el.settingsMinP.value = draft.minP;
+    el.settingsTopK.value = draft.topK;
+    el.settingsRepeatPenalty.value = draft.repeatPenalty;
+    el.settingsRepeatContextSize.value = draft.repeatContextSize;
+    el.settingsEnableThinking.checked = Boolean(draft.enableThinking);
+
+    let statusText = `Saved · ${applied.maxTokens} tok`;
+    let statusClass = "settings-panel-status";
+    if (!state.serverStatus?.available) {
+      statusText = "Server offline";
+      statusClass += " error";
+    } else if (state.settingsSaving) {
+      statusText = "Saving...";
+      statusClass += " saving";
+    } else if (state.settingsError) {
+      statusText = state.settingsError;
+      statusClass += " error";
+    } else if (state.settingsDirty) {
+      statusText = "Unsaved changes";
+      statusClass += " dirty";
+    } else if (state.settingsNotice) {
+      statusText = state.settingsNotice;
+    }
+    el.settingsPanelStatus.className = statusClass;
+    el.settingsPanelStatus.textContent = statusText;
+    el.settingsPanelNote.textContent = `Current defaults: ${applied.maxTokens} max tokens, temp ${applied.temperature}, top-p ${applied.topP}.`;
+    el.saveSettings.disabled = state.settingsSaving || !state.serverStatus?.available;
+    el.resetSettings.disabled = state.settingsSaving;
+  }
+
   /* ── Render: vibe mode ────────────────────────────────────────────────── */
 
   function renderVibeMode() {
@@ -958,12 +1229,13 @@
     // Phase badge
     const phase = state.activePhase;
     const running = state.isGenerating;
+    const settingsPending = state.settingsSaving;
     el.statusPhase.textContent = isSwitchingModel ? "Loading" : phase || (running ? "Running" : "Idle");
     el.statusPhase.className = "status-phase" + (running || isSwitchingModel ? " running" : "");
 
-    // Disable input during generation
-    el.sendBtn.disabled = running || blockedByConfirmation || isSwitchingModel;
-    el.userInput.disabled = running || blockedByConfirmation || isSwitchingModel;
+    // Keep the composer editable during generation so the caret stays active
+    el.sendBtn.disabled = running || blockedByConfirmation || isSwitchingModel || settingsPending;
+    el.userInput.disabled = blockedByConfirmation || isSwitchingModel;
     if (el.mentionFiles) {
       el.mentionFiles.disabled = running || blockedByConfirmation || isSwitchingModel;
     }
@@ -1030,6 +1302,7 @@
     el.systemPrompt.value = state.systemPrompt || "";
     syncSwitchProgress();
     renderStatus();
+    renderSettings();
     renderVibeMode();
     renderModelSelect();
     renderContextChips();
@@ -1056,10 +1329,22 @@
       state.vibeMode = Boolean(payload.vibeMode);
       state.switchingModelKey = payload.switchingModelKey || null;
       state.switchingModelLabel = payload.switchingModelLabel || null;
+      state.generationSettings = payload.generationSettings || payload.serverStatus || state.generationSettings;
+      if (!state.settingsDirty || !state.settingsDraft) {
+        state.settingsDraft = serializeGenerationSettings(appliedGenerationSettings());
+      }
       state.modelPickerOpen = false;
       state.managedServerRunning = Boolean(payload.managedServerRunning);
       renderAll();
       vscode.setState(state);
+    }
+    if (type === "settings-saved") {
+      state.settingsSaving = false;
+      state.settingsDirty = false;
+      state.settingsError = "";
+      state.settingsNotice = "Settings saved.";
+      state.settingsDraft = serializeGenerationSettings(appliedGenerationSettings());
+      renderSettings();
     }
     if (type === "file-search-results") {
       const activeMention = getActiveMention();
@@ -1081,8 +1366,14 @@
       renderMentionPicker();
     }
     if (type === "error") {
-      state.activePhase = message || "Error";
-      renderStatus();
+      if (state.settingsSaving) {
+        state.settingsSaving = false;
+        state.settingsError = message || "Could not save settings";
+        renderSettings();
+      } else {
+        state.activePhase = message || "Error";
+        renderStatus();
+      }
     }
   });
 
@@ -1090,6 +1381,9 @@
 
   el.composerForm.addEventListener("submit", (event) => {
     event.preventDefault();
+    if (state.settingsSaving) {
+      return;
+    }
     const content = el.userInput.value.trim();
     if (!content) return;
     ui.stickToBottom = true;
@@ -1098,6 +1392,7 @@
     vscode.postMessage({ type: "send-chat", content });
     el.userInput.value = "";
     el.userInput.style.height = "";
+    refocusComposer();
   });
 
   el.vibeToggle.addEventListener("click", () => {
@@ -1136,7 +1431,7 @@
       }
     }
 
-    if (event.key === "Enter" && !event.shiftKey) {
+    if (event.key === "Enter" && !event.shiftKey && !state.isGenerating && !state.settingsSaving) {
       event.preventDefault();
       el.composerForm.requestSubmit();
     }
@@ -1197,6 +1492,62 @@
 
   el.serverToggle.addEventListener("click", () => {
     vscode.postMessage({ type: state.managedServerRunning ? "stop-server" : "start-server" });
+  });
+
+  el.toggleSettings.addEventListener("click", () => {
+    if (!state.settingsOpen && (!state.settingsDraft || !state.settingsDirty)) {
+      syncSettingsDraft(true);
+    }
+    state.settingsOpen = !state.settingsOpen;
+    renderSettings();
+  });
+
+  [
+    el.settingsMaxTokens,
+    el.settingsTemperature,
+    el.settingsTopP,
+    el.settingsMinP,
+    el.settingsTopK,
+    el.settingsRepeatPenalty,
+    el.settingsRepeatContextSize,
+  ].forEach((input) => {
+    input.addEventListener("input", () => {
+      captureSettingsDraftFromInputs();
+      renderSettings();
+    });
+  });
+
+  el.settingsEnableThinking.addEventListener("change", () => {
+    captureSettingsDraftFromInputs();
+    renderSettings();
+  });
+
+  el.resetSettings.addEventListener("click", () => {
+    state.settingsSaving = false;
+    state.settingsDirty = false;
+    state.settingsError = "";
+    state.settingsNotice = "";
+    syncSettingsDraft(true);
+    renderSettings();
+  });
+
+  el.saveSettings.addEventListener("click", () => {
+    try {
+      captureSettingsDraftFromInputs();
+      const payload = parseSettingsDraft();
+      state.settingsSaving = true;
+      state.settingsError = "";
+      state.settingsNotice = "";
+      renderSettings();
+      vscode.postMessage({
+        type: "save-settings",
+        payload,
+      });
+    } catch (error) {
+      state.settingsSaving = false;
+      state.settingsError = error instanceof Error ? error.message : String(error);
+      renderSettings();
+    }
   });
 
   el.modelPickerButton.addEventListener("click", () => {
@@ -1276,13 +1627,12 @@
   }
 
   window.addEventListener("click", (event) => {
-    if (!state.modelPickerOpen) {
-      return;
+    if (state.modelPickerOpen && !event.target.closest("#model-picker")) {
+      closeModelPicker();
     }
-    if (event.target.closest("#model-picker")) {
-      return;
+    if (state.settingsOpen && !event.target.closest(".settings-anchor")) {
+      closeSettingsPanel();
     }
-    closeModelPicker();
   });
 
   vscode.postMessage({ type: "ready" });

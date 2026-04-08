@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
 
+import certifi
+import httpx
 from huggingface_hub import HfApi, snapshot_download
 from huggingface_hub.constants import HF_HUB_CACHE
+
+from backend.config import TLS_CERT_DIR
 
 
 MODEL_ALLOW_PATTERNS = [
@@ -34,6 +39,14 @@ class ModelStore:
         self.cache_root = Path(HF_HUB_CACHE)
         self.api = HfApi()
         self._mlx_validation_cache: dict[str, tuple[bool, str | None]] = {}
+        self._additional_model_roots: list[str] = []
+        self._initial_ssl_cert_file = os.environ.get("SSL_CERT_FILE")
+        self._initial_requests_ca_bundle = os.environ.get("REQUESTS_CA_BUNDLE")
+        self._custom_ca_bundle_path: str | None = None
+        self._effective_ca_bundle_path: str | None = None
+        self._ca_bundle_source = "default"
+        self._generated_ca_bundle_path = TLS_CERT_DIR / "effective-ca-bundle.pem"
+        self.configure_tls_certificate_bundle(None)
 
     def list_local_models(self) -> list[dict[str, object]]:
         models: list[dict[str, object]] = []
@@ -121,7 +134,13 @@ class ModelStore:
 
         results = []
         seen_ids: set[tuple[str, str]] = set()
-        for model in self.api.list_models(author="mlx-community", search=query, limit=limit, full=True):
+        try:
+            mlx_models = self.api.list_models(author="mlx-community", search=query, limit=limit, full=True)
+            remote_models = self.api.list_models(search=query, limit=limit * 3, full=True)
+        except Exception as exc:  # noqa: BLE001 - normalize network and TLS failures
+            raise RuntimeError(self._format_hub_error(exc, action="search remote models")) from exc
+
+        for model in mlx_models:
             if not self._has_mlx_weights(model):
                 continue
             size_bytes = self._model_size_bytes(model)
@@ -139,7 +158,7 @@ class ModelStore:
             results.append(item)
             seen_ids.add((model.id, "mlx"))
 
-        for model in self.api.list_models(search=query, limit=limit * 3, full=True):
+        for model in remote_models:
             if (model.id, "gguf") in seen_ids:
                 continue
             if not self._has_gguf(model):
@@ -172,7 +191,10 @@ class ModelStore:
         )[: limit * 2]
 
     def model_size_bytes(self, model_id: str, format: str | None = None, filename: str | None = None) -> int | None:
-        info = self.api.model_info(model_id, files_metadata=True)
+        try:
+            info = self.api.model_info(model_id, files_metadata=True)
+        except Exception as exc:  # noqa: BLE001 - normalize network and TLS failures
+            raise RuntimeError(self._format_hub_error(exc, action=f"inspect {model_id}")) from exc
         if format == "gguf" and filename:
             size_bytes = self._named_file_size_bytes(info, filename)
         elif format == "gguf":
@@ -182,7 +204,10 @@ class ModelStore:
         return size_bytes or None
 
     def list_model_files(self, model_id: str, format: str = "gguf") -> list[dict[str, object]]:
-        info = self.api.model_info(model_id, files_metadata=True)
+        try:
+            info = self.api.model_info(model_id, files_metadata=True)
+        except Exception as exc:  # noqa: BLE001 - normalize network and TLS failures
+            raise RuntimeError(self._format_hub_error(exc, action=f"load file list for {model_id}")) from exc
         files: list[dict[str, object]] = []
         for sibling in getattr(info, "siblings", []) or []:
             name = getattr(sibling, "rfilename", "") or ""
@@ -205,7 +230,10 @@ class ModelStore:
 
     def download_model(self, model_id: str, format: str = "mlx", filename: str | None = None) -> dict[str, object]:
         if format == "mlx":
-            info = self.api.model_info(model_id, files_metadata=True)
+            try:
+                info = self.api.model_info(model_id, files_metadata=True)
+            except Exception as exc:  # noqa: BLE001 - normalize network and TLS failures
+                raise RuntimeError(self._format_hub_error(exc, action=f"inspect {model_id}")) from exc
             if not self._has_mlx_weights(info):
                 raise ValueError(f"{model_id} does not contain MLX safetensors and cannot be loaded by mlx-lm.")
             allow_patterns = MODEL_ALLOW_PATTERNS
@@ -213,13 +241,40 @@ class ModelStore:
             allow_patterns = [filename, "*.json", "*.txt", "tokenizer.model", "*.tiktoken", "tiktoken.model"]
         else:
             allow_patterns = GGUF_ALLOW_PATTERNS
-        path = snapshot_download(model_id, allow_patterns=allow_patterns)
+        try:
+            path = snapshot_download(model_id, allow_patterns=allow_patterns)
+        except Exception as exc:  # noqa: BLE001 - normalize network and TLS failures
+            raise RuntimeError(self._format_hub_error(exc, action=f"download {model_id}")) from exc
         return {
             "id": model_id,
             "cached": True,
             "path": path,
             "format": format,
             "filename": filename,
+        }
+
+    def configure_tls_certificate_bundle(self, bundle_path: str | None) -> None:
+        custom_path = str(Path(bundle_path).expanduser()) if bundle_path else None
+        env_path = self._initial_ssl_cert_file or self._initial_requests_ca_bundle
+        source_path = custom_path or env_path
+
+        if source_path:
+            effective_path = self._build_effective_ca_bundle(Path(source_path).expanduser())
+            self._effective_ca_bundle_path = str(effective_path)
+            self._ca_bundle_source = "uploaded" if custom_path else "environment"
+        else:
+            self._effective_ca_bundle_path = None
+            self._ca_bundle_source = "default"
+
+        self._custom_ca_bundle_path = custom_path
+        self._apply_ca_environment(self._effective_ca_bundle_path)
+        self._configure_hub_http_client()
+
+    def tls_status(self) -> dict[str, object]:
+        return {
+            "source": self._ca_bundle_source,
+            "custom_ca_bundle_path": self._custom_ca_bundle_path,
+            "effective_ca_bundle_path": self._effective_ca_bundle_path,
         }
 
     def delete_model(self, model_id: str) -> None:
@@ -272,6 +327,27 @@ class ModelStore:
         candidate = Path(model_path).expanduser()
         return candidate.exists() and candidate.is_file() and candidate.suffix.lower() == ".gguf"
 
+    def configure_additional_model_roots(self, root_paths: list[str] | None) -> None:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for raw_path in root_paths or []:
+            candidate = Path(str(raw_path)).expanduser()
+            if not candidate.exists() or not candidate.is_dir():
+                continue
+            try:
+                resolved = candidate.resolve()
+            except OSError:
+                resolved = candidate.absolute()
+            value = str(resolved)
+            if value in seen:
+                continue
+            seen.add(value)
+            normalized.append(value)
+        self._additional_model_roots = normalized
+
+    def additional_model_roots(self) -> list[str]:
+        return list(self._additional_model_roots)
+
     def _cache_folder_name(self, model_id: str) -> str:
         return f"models--{model_id.replace('/', '--')}"
 
@@ -285,6 +361,18 @@ class ModelStore:
         return f"{owner}/{name}"
 
     def _gguf_roots(self) -> list[Path]:
+        roots = [*self._default_gguf_roots(), *(Path(item) for item in self._additional_model_roots)]
+        deduped: list[Path] = []
+        seen: set[str] = set()
+        for root in roots:
+            key = str(root.expanduser())
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(root)
+        return deduped
+
+    def _default_gguf_roots(self) -> list[Path]:
         home = Path.home()
         return [
             self.cache_root,
@@ -297,29 +385,51 @@ class ModelStore:
     def _hf_cache_mlx_entries(self) -> list[Path]:
         if not self.cache_root.exists():
             return []
-        return sorted(self.cache_root.glob("models--mlx-community--*"))
+        entries: list[Path] = []
+        for entry in self.cache_root.glob("models--*"):
+            if entry.is_dir():
+                entries.append(entry)
+        return sorted(entries)
 
     def _external_mlx_roots(self) -> list[Path]:
+        roots = [*self._default_external_mlx_roots(), *(Path(item) for item in self._additional_model_roots)]
+        return self._discover_mlx_model_dirs(roots)
+
+    def _default_external_mlx_roots(self) -> list[Path]:
         home = Path.home()
-        roots = [
-            home / ".lmstudio" / "models" / "mlx-community",
-            home / ".cache" / "lmstudio" / "models" / "mlx-community",
-            home / ".cache" / "lm-studio" / "models" / "mlx-community",
-            home / "Library" / "Application Support" / "LM Studio" / "models" / "mlx-community",
+        return [
+            home / ".lmstudio" / "models",
+            home / ".cache" / "lmstudio" / "models",
+            home / ".cache" / "lm-studio" / "models",
+            home / "Library" / "Application Support" / "LM Studio" / "models",
         ]
+
+    def _discover_mlx_model_dirs(self, roots: list[Path]) -> list[Path]:
         entries: list[Path] = []
+        seen_paths: set[str] = set()
         for root in roots:
-            if not root.exists():
+            candidate_root = root.expanduser()
+            if not candidate_root.exists() or not candidate_root.is_dir():
                 continue
-            for entry in root.iterdir():
-                if entry.is_dir():
-                    entries.append(entry)
+            for current_root, dirnames, _ in os.walk(candidate_root):
+                current = Path(current_root)
+                if self._directory_has_mlx_weights(current):
+                    resolved = str(current.resolve())
+                    if resolved not in seen_paths:
+                        seen_paths.add(resolved)
+                        entries.append(current)
+                    dirnames[:] = []
+                    continue
         return sorted(entries)
 
     def _repo_id_for_external_mlx(self, path: Path) -> str | None:
-        for parent in path.parents:
-            if parent.name == "mlx-community":
-                return f"mlx-community/{path.name}"
+        for root in [*self._default_external_mlx_roots(), *(Path(item) for item in self._additional_model_roots)]:
+            try:
+                relative_parts = path.resolve().relative_to(root.expanduser().resolve()).parts
+            except (OSError, ValueError):
+                continue
+            if len(relative_parts) >= 2:
+                return f"{relative_parts[0]}/{relative_parts[1]}"
         return None
 
     def _repo_id_for_gguf(self, path: Path) -> str | None:
@@ -378,7 +488,7 @@ class ModelStore:
         return any(snapshots_dir.rglob("*.safetensors"))
 
     def _directory_has_mlx_weights(self, directory: Path) -> bool:
-        return any(directory.glob("model*.safetensors"))
+        return any(directory.glob("model*.safetensors")) or any(directory.glob("*.safetensors"))
 
     def _latest_snapshot_dir(self, cache_dir: Path) -> Path | None:
         snapshots_dir = cache_dir / "snapshots"
@@ -414,3 +524,82 @@ class ModelStore:
         result = (True, None)
         self._mlx_validation_cache[cache_key] = result
         return result
+
+    def _build_effective_ca_bundle(self, source_path: Path) -> Path:
+        if not source_path.exists() or not source_path.is_file():
+            raise ValueError(f"Certificate bundle was not found: {source_path}")
+
+        TLS_CERT_DIR.mkdir(parents=True, exist_ok=True)
+        default_bundle = Path(certifi.where())
+        if source_path.resolve() == default_bundle.resolve():
+            return default_bundle
+
+        merged = bytearray()
+        merged.extend(default_bundle.read_bytes().rstrip())
+        merged.extend(b"\n")
+        merged.extend(source_path.read_bytes().strip())
+        merged.extend(b"\n")
+        self._generated_ca_bundle_path.write_bytes(bytes(merged))
+        return self._generated_ca_bundle_path
+
+    def _apply_ca_environment(self, effective_path: str | None) -> None:
+        if effective_path:
+            os.environ["SSL_CERT_FILE"] = effective_path
+            os.environ["REQUESTS_CA_BUNDLE"] = effective_path
+            return
+
+        if self._initial_ssl_cert_file is not None:
+            os.environ["SSL_CERT_FILE"] = self._initial_ssl_cert_file
+        else:
+            os.environ.pop("SSL_CERT_FILE", None)
+
+        if self._initial_requests_ca_bundle is not None:
+            os.environ["REQUESTS_CA_BUNDLE"] = self._initial_requests_ca_bundle
+        else:
+            os.environ.pop("REQUESTS_CA_BUNDLE", None)
+
+    def _configure_hub_http_client(self) -> None:
+        verify: bool | str = self._effective_ca_bundle_path or True
+        try:
+            from huggingface_hub import close_session, set_client_factory
+
+            def client_factory() -> httpx.Client:
+                return httpx.Client(
+                    verify=verify,
+                    trust_env=True,
+                    follow_redirects=True,
+                    timeout=httpx.Timeout(10.0, connect=10.0, read=60.0, write=60.0, pool=60.0),
+                )
+
+            set_client_factory(client_factory)
+            close_session()
+        except Exception:
+            try:
+                from huggingface_hub.utils import configure_http_backend
+                import requests
+
+                def backend_factory() -> requests.Session:
+                    session = requests.Session()
+                    session.verify = verify
+                    return session
+
+                configure_http_backend(backend_factory=backend_factory)
+            except Exception:
+                pass
+
+        self.api = HfApi()
+
+    def _format_hub_error(self, exc: Exception, action: str) -> str:
+        message = str(exc).strip() or exc.__class__.__name__
+        if isinstance(exc, httpx.ConnectError) and "CERTIFICATE_VERIFY_FAILED" in message:
+            return (
+                f"Could not {action} because TLS certificate verification failed on this network. "
+                "If your organization uses a custom root certificate, export SSL_CERT_FILE or REQUESTS_CA_BUNDLE "
+                "to that PEM file before starting MLX Studio."
+            )
+        if "CERTIFICATE_VERIFY_FAILED" in message or "self-signed certificate" in message.lower():
+            return (
+                f"Could not {action} because TLS certificate verification failed on this network. "
+                "Set SSL_CERT_FILE or REQUESTS_CA_BUNDLE to your organization's PEM bundle and restart the server."
+            )
+        return f"Could not {action}: {message}"

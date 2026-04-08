@@ -8,6 +8,62 @@ export function escapeHtml(value) {
 }
 
 export function stripHiddenReasoningMarkup(text) {
+  return stripAuxiliaryMarkup(extractVisibleAssistantText(text));
+}
+
+function extractVisibleAssistantText(text) {
+  const normalized = String(text || "").replace(/\r\n/g, "\n");
+  if (!normalized.includes("<|channel|>") && !normalized.includes("<|message|>") && !normalized.includes("<|start|>")) {
+    return normalized;
+  }
+
+  const markerPattern = /<\|channel\|>([^<\r\n]+?)<\|message\|>/gi;
+  const markers = Array.from(normalized.matchAll(markerPattern));
+  if (markers.length === 0) {
+    return "";
+  }
+
+  const preferred = [];
+  const fallback = [];
+  for (let index = 0; index < markers.length; index += 1) {
+    const match = markers[index];
+    const channel = String(match[1] || "").trim().toLowerCase();
+    const start = match.index + match[0].length;
+    const end = index + 1 < markers.length ? markers[index + 1].index : normalized.length;
+    const segment = truncateAtProtocolBoundary(normalized.slice(start, end));
+    if (channel === "final") {
+      preferred.push(segment);
+    } else if (!["analysis", "thought", "commentary"].includes(channel)) {
+      fallback.push(segment);
+    }
+  }
+
+  if (preferred.length > 0) {
+    return preferred.join("").replace(/^\n+/, "");
+  }
+  if (fallback.length > 0) {
+    return fallback.join("").replace(/^\n+/, "");
+  }
+  return "";
+}
+
+function truncateAtProtocolBoundary(text) {
+  const source = String(text || "");
+  const markers = ["<|start|>", "<|end|>", "<|channel|>", "<|message|>"];
+  let earliest = -1;
+  for (const marker of markers) {
+    const index = source.indexOf(marker);
+    if (index === -1) {
+      continue;
+    }
+    if (earliest === -1 || index < earliest) {
+      earliest = index;
+    }
+  }
+  return earliest === -1 ? source : source.slice(0, earliest);
+}
+
+function stripAuxiliaryMarkup(text) {
   return String(text || "")
     .replace(/\r\n/g, "\n")
     .replace(/<\|channel\>thought[\s\S]*?(?:<channel\|>|$)\s*/gi, "")

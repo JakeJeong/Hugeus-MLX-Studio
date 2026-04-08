@@ -24,6 +24,7 @@ import {
   stopGeneration,
 } from "./js/controllers/chat.js?v=20260328-2";
 import {
+  clearTlsCertificate,
   cancelDownload,
   deleteModel,
   deleteGgufModel,
@@ -36,6 +37,7 @@ import {
   selectModel,
   switchRuntime,
   unloadModel,
+  uploadTlsCertificate,
   useGgufPath,
 } from "./js/controllers/models.js?v=20260328-2";
 import { handleContextRemove, openWorkspaceFile, refreshWorkspaceFiles, toggleSelectedFileContext } from "./js/controllers/workspace.js?v=20260328-2";
@@ -61,7 +63,7 @@ function bindEvents() {
     if (state.isComposing || event.isComposing || event.keyCode === 229) {
       return;
     }
-    if (event.key === "Enter" && !event.shiftKey) {
+    if (event.key === "Enter" && !event.shiftKey && !state.isGenerating) {
       event.preventDefault();
       sendChat(event);
     }
@@ -108,6 +110,25 @@ function bindEvents() {
   });
   bind(elements.modelSearchButton, "click", () => {
     searchModels().catch(handleError);
+  });
+  bind(elements.tlsCertChooseButton, "click", () => {
+    elements.tlsCertFileInput?.click();
+  });
+  bind(elements.tlsCertDropzone, "click", () => {
+    elements.tlsCertFileInput?.click();
+  });
+  bind(elements.tlsCertFileInput, "change", (event) => {
+    const file = event.target.files?.[0];
+    uploadTlsCertificate(file, renderStatus, searchModels)
+      .catch(handleError)
+      .finally(() => {
+        if (elements.tlsCertFileInput) {
+          elements.tlsCertFileInput.value = "";
+        }
+      });
+  });
+  bind(elements.tlsCertClearButton, "click", () => {
+    clearTlsCertificate(renderStatus, searchModels).catch(handleError);
   });
   bind(elements.refreshGgufButton, "click", () => {
     refreshGgufModels().catch(handleError);
@@ -326,6 +347,29 @@ function bindEvents() {
     if (shouldClose) {
       closeModelManager();
     }
+  });
+
+  bind(elements.tlsCertDropzone, "dragenter", (event) => {
+    event.preventDefault();
+    elements.tlsCertDropzone.classList.add("drag-over");
+  });
+
+  bind(elements.tlsCertDropzone, "dragover", (event) => {
+    event.preventDefault();
+    elements.tlsCertDropzone.classList.add("drag-over");
+  });
+
+  bind(elements.tlsCertDropzone, "dragleave", (event) => {
+    if (event.target === elements.tlsCertDropzone) {
+      elements.tlsCertDropzone.classList.remove("drag-over");
+    }
+  });
+
+  bind(elements.tlsCertDropzone, "drop", (event) => {
+    event.preventDefault();
+    elements.tlsCertDropzone.classList.remove("drag-over");
+    const file = event.dataTransfer?.files?.[0];
+    uploadTlsCertificate(file, renderStatus, searchModels).catch(handleError);
   });
 
   document.addEventListener("keydown", (event) => {

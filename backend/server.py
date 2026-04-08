@@ -5,7 +5,7 @@ import json
 import logging
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -56,6 +56,15 @@ class ModelDeleteRequest(BaseModel):
     model_id: str | None = None
     model_path: str | None = None
     format: str | None = None
+
+
+class ModelLibraryPathRequest(BaseModel):
+    path: str = Field(min_length=1)
+
+
+class NetworkCertificateTextRequest(BaseModel):
+    filename: str | None = None
+    content: str = Field(min_length=1)
 
 
 class SettingsRequest(BaseModel):
@@ -146,6 +155,22 @@ def local_gguf_models() -> dict[str, object]:
     return {"models": state.local_gguf_models()}
 
 
+@app.post("/api/model-libraries/add")
+def add_model_library(payload: ModelLibraryPathRequest) -> dict[str, object]:
+    try:
+        return state.add_model_library_path(payload.path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/model-libraries/remove")
+def remove_model_library(payload: ModelLibraryPathRequest) -> dict[str, object]:
+    try:
+        return state.remove_model_library_path(payload.path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.post("/api/runtime")
 def switch_runtime(payload: RuntimeSelectRequest) -> dict[str, object]:
     try:
@@ -177,12 +202,20 @@ def delete_model(payload: ModelDeleteRequest) -> dict[str, object]:
 
 @app.post("/api/models/search")
 def search_models(payload: ModelSearchRequest) -> dict[str, object]:
-    return {"results": state.search_models(payload.query)}
+    try:
+        return {"results": state.search_models(payload.query)}
+    except Exception as exc:  # noqa: BLE001 - surface hub/network issues as 4xx
+        logger.warning("Model search failed for %s: %s", payload.query, exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/api/models/files")
 def model_files(model_id: str, format: str = "gguf") -> dict[str, object]:
-    return {"files": state.model_files(model_id, format=format)}
+    try:
+        return {"files": state.model_files(model_id, format=format)}
+    except Exception as exc:  # noqa: BLE001 - surface hub/network issues as 4xx
+        logger.warning("Model file listing failed for %s: %s", model_id, exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/api/models/download")
@@ -197,6 +230,37 @@ def download_model(payload: ModelSelectRequest) -> dict[str, object]:
 @app.post("/api/models/download/cancel")
 def cancel_download() -> dict[str, object]:
     return state.cancel_download()
+
+
+@app.post("/api/network/certificate")
+async def upload_network_certificate(file: UploadFile = File(...)) -> dict[str, object]:
+    try:
+        content = await file.read()
+        return state.upload_tls_certificate(file.filename or "custom-root-ca.pem", content)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 - surface upload/config issues as 4xx
+        logger.warning("Certificate upload failed for %s: %s", file.filename, exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/network/certificate/text")
+def upload_network_certificate_text(payload: NetworkCertificateTextRequest) -> dict[str, object]:
+    try:
+        return state.upload_tls_certificate(
+            payload.filename or "custom-root-ca.pem",
+            payload.content.encode("utf-8"),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 - surface upload/config issues as 4xx
+        logger.warning("Certificate text upload failed for %s: %s", payload.filename, exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/network/certificate/clear")
+def clear_network_certificate() -> dict[str, object]:
+    return state.clear_tls_certificate()
 
 
 @app.post("/api/settings")

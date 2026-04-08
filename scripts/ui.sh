@@ -3,12 +3,9 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-VENV_PY="$ROOT_DIR/.venv/bin/python"
+source "$ROOT_DIR/scripts/python_env.sh"
 
-if [ ! -x "$VENV_PY" ]; then
-  echo "Missing virtualenv Python at $VENV_PY"
-  exit 1
-fi
+ensure_project_python_env
 
 export PYTHONPATH="$ROOT_DIR"
 

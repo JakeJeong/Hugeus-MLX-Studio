@@ -181,6 +181,38 @@ export async function searchModels() {
   elements.requestState.textContent = `Found ${payload.results.length} model candidates.`;
 }
 
+export async function uploadTlsCertificate(file, renderStatus, searchModels) {
+  if (!file) {
+    return;
+  }
+
+  elements.requestState.textContent = `Applying certificate bundle ${file.name}...`;
+  const formData = new FormData();
+  formData.append("file", file);
+  const payload = await api("/api/network/certificate", {
+    method: "POST",
+    body: formData,
+  });
+  renderStatus(payload);
+  if (state.modelSearchQuery) {
+    await searchModels();
+  }
+  elements.requestState.textContent = `Certificate bundle ${file.name} applied.`;
+}
+
+export async function clearTlsCertificate(renderStatus, searchModels) {
+  elements.requestState.textContent = "Reverting to default trust settings...";
+  const payload = await api("/api/network/certificate/clear", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+  renderStatus(payload);
+  if (state.modelSearchQuery) {
+    await searchModels();
+  }
+  elements.requestState.textContent = "Custom certificate bundle removed.";
+}
+
 export async function downloadModel(
   modelId,
   format,

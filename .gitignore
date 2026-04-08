@@ -2,6 +2,7 @@
 .venv/
 .playwright-cli/
 .mlx-studio-settings.json
+.mlx-studio-certs/
 
 __pycache__/
 *.py[cod]

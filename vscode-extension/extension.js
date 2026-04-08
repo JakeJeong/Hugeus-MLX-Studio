@@ -1,9 +1,11 @@
 "use strict";
 
+const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { TextDecoder } = require("node:util");
 const { randomUUID } = require("node:crypto");
+const fs = require("node:fs");
 const vscode = require("vscode");
 
 const VIEW_ID = "mlxStudio.chatView";
@@ -12,6 +14,16 @@ const PANEL_ID = "mlxStudio.chatPanel";
 const DEFAULT_SYSTEM_PROMPT =
   "You are a helpful local assistant. Answer clearly, stay concise, and match the user's language.";
 const SERVER_PORT = "8010";
+const DEFAULT_GENERATION_SETTINGS = Object.freeze({
+  maxTokens: 512,
+  temperature: 0.0,
+  topP: 0.95,
+  minP: 0.0,
+  topK: 40,
+  repeatPenalty: 1.05,
+  repeatContextSize: 64,
+  enableThinking: false,
+});
 
 let managedServerProcess = null;
 let managedServerStopTimer = null;
@@ -39,6 +51,22 @@ function buildModelTooltip(parts) {
     .map((part) => String(part || "").trim())
     .filter(Boolean)
     .join("\n");
+}
+
+function toBoundedInteger(value, fallback, min, max) {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
+    return fallback;
+  }
+  return parsed;
+}
+
+function toBoundedNumber(value, fallback, min, max) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < min || parsed > max) {
+    return fallback;
+  }
+  return parsed;
 }
 
 class MlxStudioViewProvider {
@@ -184,6 +212,9 @@ class MlxStudioViewProvider {
       case "toggle-vibe-mode":
         this.vibeMode = !this.vibeMode;
         this.postState();
+        return;
+      case "save-settings":
+        await this.saveGenerationSettings(message.payload || {});
         return;
       case "apply-code":
         await this.applyCode(String(message.code || ""), String(message.contextItemId || ""));
@@ -334,6 +365,112 @@ class MlxStudioViewProvider {
     }
   }
 
+  async uploadTlsCertificate(filename, content) {
+    const normalizedFilename = String(filename || "").trim() || "custom-root-ca.pem";
+    const normalizedContent = String(content || "");
+    if (!normalizedContent.trim()) {
+      throw new Error("Certificate file is empty.");
+    }
+
+    await this.fetchJson("/api/network/certificate/text", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        filename: normalizedFilename,
+        content: normalizedContent,
+      }),
+    });
+
+    await this.refreshStatus();
+    if (this.modelSearchQuery) {
+      await this.searchModels(this.modelSearchQuery);
+      return;
+    }
+    this.postState();
+  }
+
+  async clearTlsCertificate() {
+    await this.fetchJson("/api/network/certificate/clear", {
+      method: "POST",
+    });
+
+    await this.refreshStatus();
+    if (this.modelSearchQuery) {
+      await this.searchModels(this.modelSearchQuery);
+      return;
+    }
+    this.postState();
+  }
+
+  getDefaultModelLibraryUri() {
+    const home = os.homedir();
+    const candidates = [
+      path.join(home, "Library", "Application Support", "LM Studio", "models"),
+      path.join(home, ".cache", "lm-studio", "models"),
+      path.join(home, ".cache", "lmstudio", "models"),
+      path.join(home, ".lmstudio", "models"),
+    ];
+    const existing = candidates.find((candidate) => {
+      try {
+        return fs.existsSync(candidate);
+      } catch {
+        return false;
+      }
+    });
+    return vscode.Uri.file(existing || home);
+  }
+
+  async chooseModelLibraryFolder() {
+    const selection = await vscode.window.showOpenDialog({
+      canSelectFiles: false,
+      canSelectFolders: true,
+      canSelectMany: false,
+      defaultUri: this.getDefaultModelLibraryUri(),
+      openLabel: "Add Model Folder",
+    });
+
+    const picked = selection?.[0];
+    if (!picked) {
+      return;
+    }
+
+    await this.addModelLibraryPath(picked.fsPath);
+  }
+
+  async addModelLibraryPath(directory) {
+    const target = String(directory || "").trim();
+    if (!target) {
+      return;
+    }
+    await this.fetchJson("/api/model-libraries/add", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ path: target }),
+    });
+    await this.refreshStatus();
+    this.postState();
+  }
+
+  async removeModelLibraryPath(directory) {
+    const target = String(directory || "").trim();
+    if (!target) {
+      return;
+    }
+    await this.fetchJson("/api/model-libraries/remove", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ path: target }),
+    });
+    await this.refreshStatus();
+    this.postState();
+  }
+
   async pickGgufFilename(modelId) {
     const payload = await this.fetchJson(`/api/models/files?model_id=${encodeURIComponent(modelId)}&format=gguf`);
     const files = Array.isArray(payload.files) ? payload.files : [];
@@ -475,6 +612,107 @@ class MlxStudioViewProvider {
       throw new Error(detail);
     }
     return response.json();
+  }
+
+  getGenerationSettingsSnapshot(source = this.serverStatus) {
+    const payload = source || {};
+    return {
+      maxTokens: toBoundedInteger(
+        payload.maxTokens ?? payload.max_tokens,
+        DEFAULT_GENERATION_SETTINGS.maxTokens,
+        1,
+        4096
+      ),
+      temperature: toBoundedNumber(
+        payload.temperature,
+        DEFAULT_GENERATION_SETTINGS.temperature,
+        0,
+        2
+      ),
+      topP: toBoundedNumber(payload.topP ?? payload.top_p, DEFAULT_GENERATION_SETTINGS.topP, 0, 1),
+      minP: toBoundedNumber(payload.minP ?? payload.min_p, DEFAULT_GENERATION_SETTINGS.minP, 0, 1),
+      topK: toBoundedInteger(payload.topK ?? payload.top_k, DEFAULT_GENERATION_SETTINGS.topK, 0, 500),
+      repeatPenalty: toBoundedNumber(
+        payload.repeatPenalty ?? payload.repeat_penalty,
+        DEFAULT_GENERATION_SETTINGS.repeatPenalty,
+        0,
+        3
+      ),
+      repeatContextSize: toBoundedInteger(
+        payload.repeatContextSize ?? payload.repeat_context_size,
+        DEFAULT_GENERATION_SETTINGS.repeatContextSize,
+        0,
+        4096
+      ),
+      enableThinking: Boolean(payload.enableThinking ?? payload.enable_thinking),
+    };
+  }
+
+  normalizeGenerationSettingsPayload(payload) {
+    const maxTokens = Number(payload.maxTokens ?? payload.max_tokens);
+    const temperature = Number(payload.temperature);
+    const topP = Number(payload.topP ?? payload.top_p);
+    const minP = Number(payload.minP ?? payload.min_p);
+    const topK = Number(payload.topK ?? payload.top_k);
+    const repeatPenalty = Number(payload.repeatPenalty ?? payload.repeat_penalty);
+    const repeatContextSize = Number(payload.repeatContextSize ?? payload.repeat_context_size);
+    const enableThinking = Boolean(payload.enableThinking ?? payload.enable_thinking);
+
+    if (!Number.isInteger(maxTokens) || maxTokens < 1 || maxTokens > 4096) {
+      throw new Error("Max Tokens must be an integer between 1 and 4096.");
+    }
+    if (!Number.isFinite(temperature) || temperature < 0 || temperature > 2) {
+      throw new Error("Temperature must be between 0.0 and 2.0.");
+    }
+    if (!Number.isFinite(topP) || topP < 0 || topP > 1) {
+      throw new Error("Top P must be between 0.0 and 1.0.");
+    }
+    if (!Number.isFinite(minP) || minP < 0 || minP > 1) {
+      throw new Error("Min P must be between 0.0 and 1.0.");
+    }
+    if (!Number.isInteger(topK) || topK < 0 || topK > 500) {
+      throw new Error("Top K must be an integer between 0 and 500.");
+    }
+    if (!Number.isFinite(repeatPenalty) || repeatPenalty < 0 || repeatPenalty > 3) {
+      throw new Error("Repeat Penalty must be between 0.0 and 3.0.");
+    }
+    if (!Number.isInteger(repeatContextSize) || repeatContextSize < 0 || repeatContextSize > 4096) {
+      throw new Error("Repeat Window must be an integer between 0 and 4096.");
+    }
+
+    return {
+      maxTokens,
+      temperature,
+      topP,
+      minP,
+      topK,
+      repeatPenalty,
+      repeatContextSize,
+      enableThinking,
+    };
+  }
+
+  async saveGenerationSettings(payload) {
+    const settings = this.normalizeGenerationSettingsPayload(payload);
+    await this.fetchJson("/api/settings", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        max_tokens: settings.maxTokens,
+        temperature: settings.temperature,
+        top_p: settings.topP,
+        min_p: settings.minP,
+        top_k: settings.topK,
+        repeat_penalty: settings.repeatPenalty,
+        repeat_context_size: settings.repeatContextSize,
+        enable_thinking: settings.enableThinking,
+      }),
+    });
+    await this.refreshStatus();
+    this.postState();
+    this.postToWebview({ type: "settings-saved" });
   }
 
   buildRequestMessages() {
@@ -1892,9 +2130,18 @@ class MlxStudioViewProvider {
     this.activePhase = "Thinking...";
     this.postState();
 
+    const generationSettings = this.getGenerationSettingsSnapshot();
     const requestBody = {
       messages: this.buildRequestMessages(),
       session_id: this.sessionId,
+      max_tokens: generationSettings.maxTokens,
+      temperature: generationSettings.temperature,
+      top_p: generationSettings.topP,
+      min_p: generationSettings.minP,
+      top_k: generationSettings.topK,
+      repeat_penalty: generationSettings.repeatPenalty,
+      repeat_context_size: generationSettings.repeatContextSize,
+      enable_thinking: generationSettings.enableThinking,
     };
 
     try {
@@ -2178,6 +2425,7 @@ class MlxStudioViewProvider {
         switchingModelLabel: this.switchingModelLabel,
         systemPrompt: this.systemPrompt,
         vibeMode: this.vibeMode,
+        generationSettings: this.getGenerationSettingsSnapshot(),
       },
     });
     this.modelsViewProvider?.postState();
@@ -2336,6 +2584,62 @@ class MlxStudioViewProvider {
           <span class="runtime-badge" id="runtime-badge" style="display:none">—</span>
         </div>
       <div class="topbar-actions">
+        <div class="settings-anchor">
+          <button id="toggle-settings" class="settings-btn" type="button" title="Generation settings">
+            <span class="settings-btn-icon">⚙</span>
+            <span id="settings-button-label">512 tok</span>
+          </button>
+          <div id="settings-panel" class="settings-panel" hidden>
+            <div class="settings-panel-header">
+              <div>
+                <div class="settings-panel-title">Generation</div>
+                <div class="settings-panel-subtitle">Applies to future messages.</div>
+              </div>
+              <div id="settings-panel-status" class="settings-panel-status">Saved</div>
+            </div>
+            <div class="settings-grid">
+              <label class="settings-field">
+                <span>Max Tokens</span>
+                <input id="settings-max-tokens" type="number" min="1" max="4096" step="1" value="512">
+              </label>
+              <label class="settings-field">
+                <span>Temperature</span>
+                <input id="settings-temperature" type="number" min="0" max="2" step="0.05" value="0">
+              </label>
+              <label class="settings-field">
+                <span>Top P</span>
+                <input id="settings-top-p" type="number" min="0" max="1" step="0.01" value="0.95">
+              </label>
+              <label class="settings-field">
+                <span>Min P</span>
+                <input id="settings-min-p" type="number" min="0" max="1" step="0.01" value="0">
+              </label>
+              <label class="settings-field">
+                <span>Top K</span>
+                <input id="settings-top-k" type="number" min="0" max="500" step="1" value="40">
+              </label>
+              <label class="settings-field">
+                <span>Repeat Penalty</span>
+                <input id="settings-repeat-penalty" type="number" min="0" max="3" step="0.01" value="1.05">
+              </label>
+              <label class="settings-field">
+                <span>Repeat Window</span>
+                <input id="settings-repeat-context-size" type="number" min="0" max="4096" step="1" value="64">
+              </label>
+            </div>
+            <label class="settings-toggle-row" for="settings-enable-thinking">
+              <span>Enable Thinking</span>
+              <input id="settings-enable-thinking" type="checkbox">
+            </label>
+            <div id="settings-panel-note" class="settings-panel-note">
+              Longer answers usually need a higher max token limit.
+            </div>
+            <div class="settings-panel-actions">
+              <button id="reset-settings" class="settings-secondary-btn" type="button">Discard</button>
+              <button id="save-settings" class="settings-primary-btn" type="button">Save</button>
+            </div>
+          </div>
+        </div>
         <button id="toggle-model-manager" class="icon-btn" type="button" title="Manage models">◫</button>
         <button id="refresh-status" class="icon-btn" type="button" title="Refresh status">↻</button>
         <button id="server-toggle" class="icon-btn" type="button" title="Start server">▶</button>
@@ -2453,6 +2757,7 @@ class MlxStudioModelsViewProvider {
         </div>
 
         <div id="model-activity" class="model-activity" hidden></div>
+        <div id="models-error-banner" class="models-banner error" hidden></div>
 
         <div class="models-tabs">
           <button id="tab-installed" type="button" class="models-tab active">Installed</button>
@@ -2470,9 +2775,40 @@ class MlxStudioModelsViewProvider {
             </div>
             <div id="local-models-list" class="model-list"></div>
           </div>
+          <div class="models-section">
+            <div class="section-title">Model Libraries</div>
+            <div class="section-note">Default LM Studio folders are auto-scanned. Add a folder here when your GGUF library lives on another disk or custom path.</div>
+            <div class="models-row">
+              <button id="add-model-library-button" type="button" class="manager-btn">Add Folder</button>
+            </div>
+            <div id="model-library-list" class="model-list"></div>
+          </div>
         </div>
 
         <div id="search-panel" class="models-panel" hidden>
+          <div class="models-section">
+            <div class="section-title">Network Trust</div>
+            <div id="tls-cert-status" class="cert-status-card">
+              <div id="tls-cert-title" class="cert-status-title">Using default CA bundle</div>
+              <div id="tls-cert-detail" class="cert-status-detail">Import a company PEM only if your network intercepts HTTPS.</div>
+              <div id="tls-cert-meta" class="cert-status-meta"></div>
+            </div>
+            <div class="cert-status-note">Default public CA trust stays active. A custom PEM is only merged in when you import one.</div>
+            <input
+              id="tls-cert-input"
+              type="file"
+              accept=".pem,.crt,.cer,.bundle,text/plain,application/x-pem-file"
+              hidden
+            />
+            <div id="tls-cert-dropzone" class="cert-dropzone" tabindex="0" role="button" aria-label="Import TLS certificate bundle">
+              Drop a PEM bundle here or choose a file
+            </div>
+            <div class="models-row">
+              <button id="tls-cert-choose-button" type="button" class="manager-btn">Choose PEM</button>
+              <button id="tls-cert-clear-button" type="button" class="manager-btn subtle">Clear</button>
+            </div>
+          </div>
+
           <div class="models-section">
             <form id="model-search-form" class="models-row">
               <input id="model-search-input" class="model-search-input" type="text" placeholder="Search MLX or GGUF models..." />
@@ -2523,6 +2859,18 @@ class MlxStudioModelsViewProvider {
       case "cancel-model-download":
         await this.host.cancelModelDownload();
         return;
+      case "upload-tls-certificate":
+        await this.host.uploadTlsCertificate(String(message.filename || ""), String(message.content || ""));
+        return;
+      case "clear-tls-certificate":
+        await this.host.clearTlsCertificate();
+        return;
+      case "choose-model-library-folder":
+        await this.host.chooseModelLibraryFolder();
+        return;
+      case "remove-model-library-folder":
+        await this.host.removeModelLibraryPath(String(message.path || ""));
+        return;
       case "open-chat":
         await vscode.commands.executeCommand("mlxStudio.openChat");
         return;
@@ -2546,6 +2894,8 @@ class MlxStudioModelsViewProvider {
         modelSearchQuery: this.host.modelSearchQuery,
         modelActivity: this.host.modelActivity,
         serverStatus: this.host.serverStatus,
+        network: this.host.serverStatus?.network || null,
+        libraries: this.host.serverStatus?.libraries || null,
         switchingModelKey: this.host.switchingModelKey,
         switchingModelLabel: this.host.switchingModelLabel,
       },

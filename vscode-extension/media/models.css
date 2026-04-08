@@ -126,11 +126,42 @@ body {
   background: color-mix(in srgb, var(--vscode-editor-background) 88%, var(--vscode-input-background) 12%);
 }
 
+.models-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 11px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--vscode-panel-border);
+  background: color-mix(in srgb, var(--vscode-editorWarning-foreground, #f0b429) 10%, var(--vscode-editor-background));
+}
+
+.models-banner[hidden] {
+  display: none !important;
+}
+
+.models-banner.error {
+  border-color: color-mix(in srgb, var(--vscode-errorForeground, #f85149) 35%, transparent);
+  background: color-mix(in srgb, var(--vscode-errorForeground, #f85149) 10%, var(--vscode-editor-background));
+}
+
+.models-banner-text {
+  min-width: 0;
+  font-size: 12px;
+  color: var(--vscode-editor-foreground);
+}
+
 .section-title {
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
+  color: var(--vscode-descriptionForeground);
+}
+
+.section-note {
+  font-size: 11px;
   color: var(--vscode-descriptionForeground);
 }
 
@@ -140,6 +171,80 @@ body {
   gap: 8px;
   flex-wrap: wrap;
   min-width: 0;
+}
+
+.cert-status-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 11px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--vscode-panel-border);
+  background: color-mix(in srgb, var(--vscode-textCodeBlock-background) 70%, transparent);
+}
+
+.cert-status-card.configured {
+  border-color: color-mix(in srgb, var(--vscode-button-background) 42%, transparent);
+  background: color-mix(in srgb, var(--vscode-button-background) 10%, var(--vscode-textCodeBlock-background));
+}
+
+.cert-status-card.offline {
+  border-color: color-mix(in srgb, var(--vscode-errorForeground, #f85149) 28%, transparent);
+}
+
+.cert-status-card.pending {
+  border-color: color-mix(in srgb, var(--vscode-progressBar-background, var(--vscode-button-background)) 42%, transparent);
+}
+
+.cert-status-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--vscode-editor-foreground);
+}
+
+.cert-status-detail,
+.cert-status-meta,
+.cert-status-note {
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+}
+
+.cert-status-meta {
+  word-break: break-all;
+}
+
+.cert-dropzone {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 72px;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px dashed color-mix(in srgb, var(--vscode-button-background) 32%, var(--vscode-panel-border));
+  background: color-mix(in srgb, var(--vscode-editor-background) 72%, var(--vscode-input-background) 28%);
+  color: var(--vscode-editor-foreground);
+  text-align: center;
+  cursor: pointer;
+}
+
+.cert-dropzone:hover {
+  background: color-mix(in srgb, var(--vscode-button-background) 8%, var(--vscode-editor-background));
+}
+
+.cert-dropzone:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder, var(--vscode-button-background));
+  outline-offset: 2px;
+}
+
+.cert-dropzone.drag-over {
+  border-style: solid;
+  border-color: color-mix(in srgb, var(--vscode-button-background) 55%, transparent);
+  background: color-mix(in srgb, var(--vscode-button-background) 12%, var(--vscode-editor-background));
+}
+
+.cert-dropzone.is-disabled {
+  cursor: default;
+  opacity: 0.7;
 }
 
 .model-search-input {
@@ -211,6 +316,13 @@ body {
 .model-card.selected {
   border-color: color-mix(in srgb, var(--vscode-button-background) 45%, transparent);
   background: color-mix(in srgb, var(--vscode-button-background) 12%, var(--vscode-textCodeBlock-background));
+}
+
+.model-card.library-card .model-card-title,
+.model-card.library-card .model-card-subtitle,
+.model-card.library-card .model-card-meta {
+  white-space: normal;
+  word-break: break-word;
 }
 
 .model-card-main {

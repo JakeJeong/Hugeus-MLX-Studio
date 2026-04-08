@@ -105,7 +105,6 @@ export function updateUiState() {
   const busy = state.isGenerating;
   elements.sendButton.disabled = busy;
   elements.stopButton.disabled = !busy;
-  elements.userInput.disabled = busy;
   elements.clearChatButton.disabled = busy;
   elements.openModelManagerButton.disabled = busy;
   elements.headerModelManagerButton.disabled = busy;
@@ -207,6 +206,7 @@ export function formatMessageMetrics(metrics) {
 export function renderStatus(payload) {
   state.runtime = payload.runtime;
   state.runtimes = Array.isArray(payload.runtimes) ? payload.runtimes : [];
+  state.network = payload.network || state.network;
   const activeModel = payload.model_id || (payload.runtime === "llama_cpp" ? "No GGUF selected" : "-");
   if (elements.activeModel) {
     elements.activeModel.textContent = activeModel;
@@ -250,6 +250,35 @@ export function renderStatus(payload) {
     elements.enableThinking.checked = Boolean(payload.enable_thinking);
   }
   renderRuntimeSelector(payload.runtimes || [], payload.runtime);
+  renderTlsCertificateStatus();
+}
+
+export function renderTlsCertificateStatus() {
+  if (!elements.tlsCertStatusTitle || !elements.tlsCertStatusDetail) {
+    return;
+  }
+
+  const network = state.network || {};
+  const source = network.source || "default";
+  const uploadedName = network.custom_ca_bundle_name || "custom-root-ca.pem";
+
+  if (source === "uploaded") {
+    elements.tlsCertStatusTitle.textContent = `Custom TLS bundle active: ${uploadedName}`;
+    elements.tlsCertStatusDetail.textContent =
+      "MLX Studio merged your uploaded PEM with the default trust store and applies it to Hugging Face search/download automatically.";
+  } else if (source === "environment") {
+    elements.tlsCertStatusTitle.textContent = "Using certificate bundle from startup environment";
+    elements.tlsCertStatusDetail.textContent =
+      "A shell-level SSL_CERT_FILE or REQUESTS_CA_BUNDLE was detected when the server started. Uploading here will override it for this project.";
+  } else {
+    elements.tlsCertStatusTitle.textContent = "Using default system trust";
+    elements.tlsCertStatusDetail.textContent =
+      "If remote model search fails on a corporate network, drop a PEM bundle here. MLX Studio will apply it to both SSL_CERT_FILE and REQUESTS_CA_BUNDLE internally.";
+  }
+
+  if (elements.tlsCertClearButton) {
+    elements.tlsCertClearButton.disabled = !network.custom_ca_bundle_configured;
+  }
 }
 
 export function renderGenerationPhase(phase) {

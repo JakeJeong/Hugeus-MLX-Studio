@@ -50,6 +50,15 @@ const PRESETS = {
   },
 };
 
+function refocusUserInput() {
+  if (!elements.userInput) {
+    return;
+  }
+  window.requestAnimationFrame(() => {
+    elements.userInput.focus({ preventScroll: true });
+  });
+}
+
 export function restoreUiSettings() {
   try {
     const raw = window.localStorage.getItem(UI_SETTINGS_STORAGE_KEY);
@@ -293,6 +302,7 @@ export async function sendChat(event) {
   });
   renderMessages();
   elements.userInput.value = "";
+  refocusUserInput();
   renderGenerationPhase({
     phase: "prefill",
     label: "Thinking...",

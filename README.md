@@ -62,6 +62,7 @@ VS Code 확장은 이제 단순 “채팅 MVP”를 넘어서, 실제 파일 작
 - 타깃 파일 지정 후 응답을 바로 파일에 반영
 - `@@path ...` 프로토콜을 이용한 새 파일 자동 생성
 - 없는 폴더를 만들 때는 인라인 확인 UI 표시
+- `Models` 뷰에서 비표준 LM Studio / 외장 디스크 GGUF 경로 직접 추가
 - 응답 전체 복사, 코드/마크다운 블록 단위 복사
 - 스트리밍 중 코드/마크다운 렌더링 개선
 - `⚡ Vibe`에만 과도하게 의존하지 않는 자동 처리 흐름
@@ -139,6 +140,21 @@ python3 -m venv .venv
 브라우저 접속:
 
 - [http://127.0.0.1:8010](http://127.0.0.1:8010)
+
+## 네트워크 인증서 이슈
+
+회사망이나 보안 프록시 환경에서 Hugging Face 검색/다운로드 시 `CERTIFICATE_VERIFY_FAILED`가 나올 수 있습니다.
+
+이 경우 조직의 루트 인증서 PEM 파일을 지정하고 서버를 실행하세요.
+
+```bash
+export SSL_CERT_FILE=/path/to/company-root-ca.pem
+export REQUESTS_CA_BUNDLE=/path/to/company-root-ca.pem
+export HF_ENDPOINT=https://hf-mirror.com
+./scripts/ui.sh --port 8010
+```
+
+웹 UI의 `Manage Models`와 VS Code extension의 `Models > Search` 탭 안에서도 인증서 PEM을 드래그앤드롭하거나 불러와서 설정할 수 있습니다. 업로드한 인증서는 기본 trust bundle에 합쳐져서 적용되므로, 커스텀 인증서와 기본 공개 CA 둘 다 함께 동작합니다.
 
 ## 웹 UI 사용
 

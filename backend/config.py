@@ -8,11 +8,12 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 PROMPTS_DIR = ROOT_DIR / "benchmark" / "prompts"
 RESULTS_DIR = ROOT_DIR / "benchmark" / "results"
 FRONTEND_DIR = ROOT_DIR / "frontend"
+TLS_CERT_DIR = ROOT_DIR / ".mlx-studio-certs"
 
 DEFAULT_MODEL = "mlx-community/Qwen2.5-7B-Instruct-4bit"
 DEFAULT_RUNTIME = "mlx"
 DEFAULT_RUNTIME_CHOICES = ("mlx", "llama_cpp", "mock")
-DEFAULT_MAX_TOKENS = 200
+DEFAULT_MAX_TOKENS = 512
 DEFAULT_TEMPERATURE = 0.0
 DEFAULT_TOP_P = 0.95
 DEFAULT_MIN_P = 0.0

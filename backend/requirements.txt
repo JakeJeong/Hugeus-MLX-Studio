@@ -3,3 +3,4 @@ git+https://github.com/huggingface/transformers.git@52cb0653b48fcb0737a74546911d
 llama-cpp-python
 fastapi
 uvicorn[standard]
+python-multipart

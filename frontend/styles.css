@@ -208,6 +208,32 @@ h2 {
   background: rgba(255, 255, 255, 0.025);
 }
 
+.cert-status-card {
+  margin-bottom: 12px;
+}
+
+.cert-dropzone {
+  margin-bottom: 12px;
+  padding: 18px 16px;
+  border-radius: 18px;
+  border: 1px dashed rgba(89, 165, 255, 0.34);
+  background: rgba(89, 165, 255, 0.08);
+  cursor: pointer;
+  transition: border-color 140ms ease, background 140ms ease, transform 140ms ease;
+}
+
+.cert-dropzone strong {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.cert-dropzone:hover,
+.cert-dropzone.drag-over {
+  border-color: rgba(89, 165, 255, 0.75);
+  background: rgba(89, 165, 255, 0.14);
+  transform: translateY(-1px);
+}
+
 .header-actions,
 .inline-actions,
 .card-actions {

@@ -21,6 +21,8 @@ Implemented and working in the current codebase:
 
 - Local chat UI connected to the MLX Studio FastAPI backend at `http://127.0.0.1:8010`
 - Activity bar view with runtime status, model selection, and composer actions
+- Models view search tab with remote model search plus PEM import/drag-and-drop for corporate TLS roots
+- Models view installed tab with custom model library folders for non-default LM Studio or external GGUF paths
 - Workspace file attachment from the active editor
 - `@`-based workspace file search and attach flow
 - Target file selection through context chips
@@ -153,6 +155,8 @@ Response rendering also includes:
 - Copy for individual code or markdown blocks
 - Streaming-friendly markdown and code presentation
 - Hidden internal protocol lines such as `@@path ...`
+
+For restricted enterprise networks, open the `Models` view, switch to `Search`, and import a PEM bundle there. The backend merges the uploaded company certificate with the default public CA bundle, so normal HTTPS trust remains intact.
 
 ## Commands
 

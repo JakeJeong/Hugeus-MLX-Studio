@@ -10,6 +10,7 @@ from typing import Iterator
 from backend.config import BenchmarkDefaults
 from backend.model_store import ModelStore
 from backend.core.runtime import Runtime, build_runtime, runtime_capabilities
+from backend.output_sanitizer import VisibleAssistantStream, sanitize_visible_assistant_text
 from backend.settings_store import SettingsStore
 from backend.workspace_store import WorkspaceStore
 
@@ -43,6 +44,12 @@ class AppState:
         self._runtime: Runtime = build_runtime(defaults.runtime, defaults.model_id)
         self._lock = threading.RLock()
         self._model_store = ModelStore()
+        self._custom_model_library_paths = self._resolve_saved_directory_paths(persisted.get("custom_model_library_paths"))
+        self._model_store.configure_additional_model_roots(self._custom_model_library_paths)
+        self._tls_cert_dir = defaults.frontend_dir.parent / ".mlx-studio-certs"
+        self._custom_tls_bundle_path = self._resolve_saved_tls_path(persisted.get("tls_custom_ca_bundle_path"))
+        self._custom_tls_bundle_name = persisted.get("tls_custom_ca_bundle_name") if self._custom_tls_bundle_path else None
+        self._model_store.configure_tls_certificate_bundle(self._custom_tls_bundle_path)
         self._workspace = WorkspaceStore(defaults.frontend_dir.parent)
         self._download_status: dict[str, object] = {
             "active": False,
@@ -68,6 +75,14 @@ class AppState:
             stop_strings=tuple(persisted.get("stop_strings", defaults.stop_strings)),
             enable_thinking=bool(persisted.get("enable_thinking", defaults.enable_thinking)),
         )
+        if (
+            persisted.get("tls_custom_ca_bundle_path")
+            and not self._custom_tls_bundle_path
+        ) or (
+            persisted.get("custom_model_library_paths")
+            and not self._custom_model_library_paths
+        ):
+            self._persist_settings()
 
     def available_models(self) -> list[dict[str, object]]:
         if self._runtime_name == "llama_cpp":
@@ -283,7 +298,7 @@ class AppState:
                 session_id=session_id,
             )
             return {
-                "reply": result.output_text,
+                "reply": sanitize_visible_assistant_text(result.output_text),
                 "metrics": result.metrics_dict(),
                 "model_id": result.model_id,
             }
@@ -302,8 +317,9 @@ class AppState:
         enable_thinking: bool | None = None,
         session_id: str | None = None,
     ) -> Iterator[dict[str, object]]:
+        sanitizer = VisibleAssistantStream()
         with self._lock:
-            yield from self._runtime.stream_messages(
+            for event in self._runtime.stream_messages(
                 messages,
                 max_tokens=max_tokens or self._settings.max_tokens,
                 temperature=self._settings.temperature if temperature is None else temperature,
@@ -317,7 +333,13 @@ class AppState:
                 stop_strings=list(self._settings.stop_strings if stop_strings is None else stop_strings),
                 enable_thinking=self._settings.enable_thinking if enable_thinking is None else enable_thinking,
                 session_id=session_id,
-            )
+            ):
+                if event.get("type") != "delta":
+                    yield event
+                    continue
+                visible_delta = sanitizer.push(str(event.get("text") or ""))
+                if visible_delta:
+                    yield {"type": "delta", "text": visible_delta}
 
     def status(self) -> dict[str, object]:
         return {
@@ -335,6 +357,28 @@ class AppState:
             "stop_strings": list(self._settings.stop_strings),
             "enable_thinking": self._settings.enable_thinking,
             "models": self.available_models(),
+            "network": self.network_status(),
+            "libraries": self.library_status(),
+        }
+
+    def network_status(self) -> dict[str, object]:
+        tls_status = self._model_store.tls_status()
+        return {
+            "custom_ca_bundle_configured": bool(self._custom_tls_bundle_path),
+            "custom_ca_bundle_name": self._custom_tls_bundle_name,
+            "source": tls_status["source"],
+            "effective_ca_bundle_path": tls_status["effective_ca_bundle_path"],
+        }
+
+    def library_status(self) -> dict[str, object]:
+        return {
+            "custom_model_roots": [
+                {
+                    "path": item,
+                    "label": Path(item).name or item,
+                }
+                for item in self._custom_model_library_paths
+            ]
         }
 
     def update_settings(
@@ -370,6 +414,58 @@ class AppState:
         self._persist_settings()
         return self.status()
 
+    def upload_tls_certificate(self, filename: str, content: bytes) -> dict[str, object]:
+        normalized = filename.strip() or "custom-root-ca.pem"
+        if len(content) > 1_500_000:
+            raise ValueError("Certificate bundle is too large. Use a PEM bundle smaller than 1.5 MB.")
+
+        try:
+            text = content.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError("Certificate bundle must be a UTF-8 PEM file.") from exc
+
+        if "BEGIN CERTIFICATE" not in text:
+            raise ValueError("Certificate bundle must contain at least one PEM certificate block.")
+
+        self._tls_cert_dir.mkdir(parents=True, exist_ok=True)
+        target = self._tls_cert_dir / "custom-root-ca.pem"
+        target.write_text(text.strip() + "\n", encoding="utf-8")
+        self._custom_tls_bundle_path = str(target)
+        self._custom_tls_bundle_name = normalized
+        self._model_store.configure_tls_certificate_bundle(self._custom_tls_bundle_path)
+        self._persist_settings()
+        return self.status()
+
+    def clear_tls_certificate(self) -> dict[str, object]:
+        if self._custom_tls_bundle_path:
+            Path(self._custom_tls_bundle_path).unlink(missing_ok=True)
+        self._custom_tls_bundle_path = None
+        self._custom_tls_bundle_name = None
+        self._model_store.configure_tls_certificate_bundle(None)
+        self._persist_settings()
+        return self.status()
+
+    def add_model_library_path(self, directory: str) -> dict[str, object]:
+        normalized = self._normalize_directory_path(directory, require_exists=True)
+        if normalized in self._custom_model_library_paths:
+            return self.status()
+        self._custom_model_library_paths = sorted(
+            [*self._custom_model_library_paths, normalized],
+            key=str.lower,
+        )
+        self._model_store.configure_additional_model_roots(self._custom_model_library_paths)
+        self._persist_settings()
+        return self.status()
+
+    def remove_model_library_path(self, directory: str) -> dict[str, object]:
+        normalized = self._normalize_directory_path(directory, require_exists=False)
+        self._custom_model_library_paths = [
+            item for item in self._custom_model_library_paths if item != normalized
+        ]
+        self._model_store.configure_additional_model_roots(self._custom_model_library_paths)
+        self._persist_settings()
+        return self.status()
+
     def _persist_settings(self) -> None:
         self._settings_store.save(
             {
@@ -382,8 +478,45 @@ class AppState:
                 "repeat_context_size": self._settings.repeat_context_size,
                 "stop_strings": list(self._settings.stop_strings),
                 "enable_thinking": self._settings.enable_thinking,
+                "custom_model_library_paths": self._custom_model_library_paths,
+                "tls_custom_ca_bundle_path": self._custom_tls_bundle_path,
+                "tls_custom_ca_bundle_name": self._custom_tls_bundle_name,
             }
         )
+
+    def _resolve_saved_directory_paths(self, raw_paths: object) -> list[str]:
+        if not isinstance(raw_paths, list):
+            return []
+        resolved: list[str] = []
+        seen: set[str] = set()
+        for raw_path in raw_paths:
+            try:
+                normalized = self._normalize_directory_path(raw_path, require_exists=True)
+            except ValueError:
+                continue
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            resolved.append(normalized)
+        return resolved
+
+    def _normalize_directory_path(self, raw_path: object, require_exists: bool) -> str:
+        value = str(raw_path or "").strip()
+        if not value:
+            raise ValueError("Model library path is required.")
+        candidate = Path(value).expanduser()
+        if require_exists and (not candidate.exists() or not candidate.is_dir()):
+            raise ValueError("Choose an existing model library folder.")
+        try:
+            return str(candidate.resolve(strict=require_exists))
+        except OSError as exc:
+            raise ValueError(f"Could not resolve model library path: {value}") from exc
+
+    def _resolve_saved_tls_path(self, raw_path: object) -> str | None:
+        if not raw_path:
+            return None
+        candidate = Path(str(raw_path)).expanduser()
+        return str(candidate) if candidate.exists() and candidate.is_file() else None
 
     def reset_session(self, session_id: str) -> None:
         runtime = self._runtime

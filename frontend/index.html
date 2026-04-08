@@ -269,6 +269,19 @@
                 <h2>Search MLX Community</h2>
               </div>
             </div>
+            <div class="info-card muted-card cert-status-card">
+              <strong id="tls-cert-status-title">Using default system trust</strong>
+              <p id="tls-cert-status-detail">Drop a PEM bundle here if your network intercepts TLS for Hugging Face traffic.</p>
+            </div>
+            <input id="tls-cert-file-input" type="file" accept=".pem,.crt,.cer,.bundle" hidden>
+            <div id="tls-cert-dropzone" class="cert-dropzone" tabindex="0" role="button" aria-label="Drop or choose a certificate bundle file">
+              <strong>Drop PEM bundle here</strong>
+              <p class="subtle">or click to choose a certificate file for corporate TLS interception.</p>
+            </div>
+            <div class="inline-actions">
+              <button id="tls-cert-choose-button" class="button ghost compact" type="button">Choose PEM</button>
+              <button id="tls-cert-clear-button" class="button ghost compact" type="button">Use Default Trust</button>
+            </div>
             <div class="search-row">
               <input id="model-search-input" type="text" placeholder="qwen, 7b, coder...">
               <button id="model-search-button" class="button compact" type="button">Search</button>
