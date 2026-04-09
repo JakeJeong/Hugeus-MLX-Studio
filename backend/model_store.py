@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import shutil
+import ssl
+import sys
 from pathlib import Path
 
 import certifi
@@ -10,6 +12,11 @@ from huggingface_hub import HfApi, snapshot_download
 from huggingface_hub.constants import HF_HUB_CACHE
 
 from backend.config import HF_MIRROR_ENDPOINT, HUGGING_FACE_ENDPOINT, TLS_CERT_DIR
+
+try:
+    import truststore
+except Exception:  # noqa: BLE001 - optional dependency
+    truststore = None
 
 
 MODEL_ALLOW_PATTERNS = [
@@ -583,7 +590,7 @@ class ModelStore:
             os.environ.pop("HF_ENDPOINT", None)
 
     def _configure_hub_http_client(self) -> None:
-        verify: bool | str = self._effective_ca_bundle_path or True
+        verify: bool | str | ssl.SSLContext = self._httpx_verify_config()
         try:
             from huggingface_hub import close_session, set_client_factory
 
@@ -613,6 +620,21 @@ class ModelStore:
 
         self.api = HfApi(endpoint=self._hub_endpoint)
 
+    def _httpx_verify_config(self) -> bool | str | ssl.SSLContext:
+        # On macOS corporate networks the system Keychain trust store is often
+        # more reliable than certifi, especially for TLS interception products.
+        if truststore is not None and sys.platform == "darwin":
+            try:
+                context = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+                source_path = self._custom_ca_bundle_path or self._initial_ssl_cert_file or self._initial_requests_ca_bundle
+                if source_path:
+                    context.load_verify_locations(cafile=str(Path(source_path).expanduser()))
+                return context
+            except Exception:
+                pass
+
+        return self._effective_ca_bundle_path or True
+
     def _normalize_hub_endpoint(self, endpoint: str | None) -> str:
         value = str(endpoint or "").strip()
         if not value:
@@ -636,6 +658,12 @@ class ModelStore:
                 f"Could not {action} because TLS certificate verification failed on this network. "
                 "If your organization uses a custom root certificate, export SSL_CERT_FILE or REQUESTS_CA_BUNDLE "
                 "to that PEM file before starting MLX Studio."
+            )
+        if "Basic Constraints of CA cert not marked critical" in message:
+            return (
+                f"Could not {action} because the imported PEM is not a standards-compliant CA certificate for OpenSSL. "
+                "On macOS, import that certificate into Keychain Access and trust it there, then use the default system trust store; "
+                "or ask IT for the proper root CA PEM."
             )
         if "CERTIFICATE_VERIFY_FAILED" in message or "self-signed certificate" in message.lower():
             return (

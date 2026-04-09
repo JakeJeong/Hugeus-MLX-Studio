@@ -29,6 +29,9 @@ struct RootSplitView: View {
                     if let banner = model.banner, banner.kind == .error {
                         bannerView(banner)
                     }
+                    if model.shouldShowRuntimeBootstrapOverlay {
+                        runtimeBootstrapView
+                    }
                     contentArea
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -228,6 +231,33 @@ struct RootSplitView: View {
                     .transition(.move(edge: .trailing).combined(with: .opacity))
             }
         }
+    }
+
+    private var runtimeBootstrapView: some View {
+        HStack(spacing: 14) {
+            ProgressView()
+                .controlSize(.regular)
+                .tint(StudioTheme.accent)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(model.runtimeBootstrapTitle)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(StudioTheme.label)
+                Text(model.runtimeBootstrapDetail.isEmpty ? "Preparing the local MLX Studio runtime." : model.runtimeBootstrapDetail)
+                    .font(.caption)
+                    .foregroundStyle(StudioTheme.secondaryLabel)
+            }
+
+            Spacer()
+
+            Button("Open Logs") {
+                model.selectedSection = .logs
+            }
+            .buttonStyle(.bordered)
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 16)
+        .studioPanel(fill: StudioTheme.surface.opacity(0.94), cornerRadius: 18)
     }
 
     private var showsInspector: Bool {

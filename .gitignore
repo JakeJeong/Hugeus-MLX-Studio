@@ -3,6 +3,9 @@
 .playwright-cli/
 .mlx-studio-settings.json
 .mlx-studio-certs/
+dist/
+.build/
+backend/wheelhouse/
 
 __pycache__/
 *.py[cod]

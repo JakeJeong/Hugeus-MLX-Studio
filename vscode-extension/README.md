@@ -64,6 +64,15 @@ What each part is responsible for:
 
 There is currently no build step. The extension runs as plain JavaScript.
 
+To export an installable `.vsix` from the repository root:
+
+```bash
+./scripts/package_vscode_extension.sh
+```
+
+This creates a local package in `dist/` that can be installed from
+`Extensions: Install from VSIX...`.
+
 ## Response Protocols
 
 The extension currently relies more on output protocol detection than on large keyword-based intent rules.

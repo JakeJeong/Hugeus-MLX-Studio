@@ -1,6 +1,5 @@
 git+https://github.com/ml-explore/mlx-lm.git@dcbf6e33d135a1b7c6767ca0fe7ebbd23df814a7
 git+https://github.com/huggingface/transformers.git@52cb0653b48fcb0737a74546911df77034b61732
-llama-cpp-python
 fastapi
 uvicorn[standard]
 python-multipart

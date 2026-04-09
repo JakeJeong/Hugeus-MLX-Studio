@@ -20,6 +20,8 @@ enum ManagedStudioRuntimeControllerError: LocalizedError {
 // This controller owns the local backend process. The rest of the app only
 // sees lifecycle methods and log lines through the domain protocol.
 final class ManagedStudioRuntimeController: ManagedRuntimeControlling, @unchecked Sendable {
+    private let bundledRuntimeFolderName = "MLXStudioRuntime"
+    private let writableRuntimeRelativePath = "MLX Studio/Runtime"
     private var process: Process?
     private var pipes: [Pipe] = []
     private var logHandler: (@Sendable (String) -> Void)?
@@ -38,7 +40,7 @@ final class ManagedStudioRuntimeController: ManagedRuntimeControlling, @unchecke
             return
         }
 
-        let rootURL = try locateRepositoryRoot()
+        let rootURL = try resolveRuntimeRoot()
         let process = Process()
         process.currentDirectoryURL = rootURL
         process.executableURL = rootURL.appendingPathComponent("scripts/ui.sh")
@@ -46,6 +48,16 @@ final class ManagedStudioRuntimeController: ManagedRuntimeControlling, @unchecke
 
         var environment = ProcessInfo.processInfo.environment
         environment["PYTHONUNBUFFERED"] = "1"
+        let defaultPATH = environment["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin"
+        environment["PATH"] = [
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "/Library/Frameworks/Python.framework/Versions/3.13/bin",
+            "/Library/Frameworks/Python.framework/Versions/3.12/bin",
+            "/Library/Frameworks/Python.framework/Versions/3.11/bin",
+            "/Library/Frameworks/Python.framework/Versions/3.10/bin",
+            defaultPATH,
+        ].joined(separator: ":")
         process.environment = environment
 
         let stdout = Pipe()
@@ -160,6 +172,56 @@ final class ManagedStudioRuntimeController: ManagedRuntimeControlling, @unchecke
             .split(whereSeparator: \.isNewline)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
+    }
+
+    private func resolveRuntimeRoot() throws -> URL {
+        if let bundledRoot = bundledRuntimeRoot() {
+            return try prepareBundledRuntime(from: bundledRoot)
+        }
+        return try locateRepositoryRoot()
+    }
+
+    private func bundledRuntimeRoot() -> URL? {
+        guard let resourcesURL = Bundle.main.resourceURL else {
+            return nil
+        }
+
+        let candidate = resourcesURL.appendingPathComponent(bundledRuntimeFolderName, isDirectory: true)
+        let fileManager = FileManager.default
+        let scriptPath = candidate.appendingPathComponent("scripts/ui.sh").path
+        let backendPath = candidate.appendingPathComponent("backend/server.py").path
+
+        guard fileManager.fileExists(atPath: scriptPath), fileManager.fileExists(atPath: backendPath) else {
+            return nil
+        }
+
+        return candidate
+    }
+
+    private func prepareBundledRuntime(from bundledRoot: URL) throws -> URL {
+        let fileManager = FileManager.default
+        let appSupportURL = try fileManager.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )
+        let writableRoot = appSupportURL.appendingPathComponent(writableRuntimeRelativePath, isDirectory: true)
+        try fileManager.createDirectory(at: writableRoot, withIntermediateDirectories: true)
+
+        // The app bundle is read-only, so backend sources are mirrored into
+        // Application Support while the local .venv and settings remain writable.
+        for component in ["backend", "frontend", "scripts"] {
+            let sourceURL = bundledRoot.appendingPathComponent(component, isDirectory: true)
+            let destinationURL = writableRoot.appendingPathComponent(component, isDirectory: true)
+
+            if fileManager.fileExists(atPath: destinationURL.path) {
+                try fileManager.removeItem(at: destinationURL)
+            }
+            try fileManager.copyItem(at: sourceURL, to: destinationURL)
+        }
+
+        return writableRoot
     }
 
     private func locateRepositoryRoot() throws -> URL {

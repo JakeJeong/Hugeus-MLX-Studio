@@ -181,12 +181,46 @@ export HF_ENDPOINT=https://hf-mirror.com
 - 실행 설정: [.vscode/launch.json](.vscode/launch.json)
 - extension 진입점: [vscode-extension/package.json](vscode-extension/package.json)
 
+Packaging shortcuts:
+
+- `./scripts/build_offline_wheelhouse.sh`: builds the offline MLX dependency bundle in `backend/wheelhouse`
+- `./scripts/package_macos_app.sh`: builds `dist/MLX Studio.app` and includes the offline MLX wheelhouse bundle
+- `./scripts/package_vscode_extension.sh`: builds `dist/mlx-studio-vscode-<version>.vsix`
+- `./scripts/package_artifacts.sh`: exports both artifacts in one pass
+- `./scripts/test_packaged_bootstrap.sh`: simulates first-run bootstrap with a clean HOME and minimal PATH
+
 순서:
 
 1. 이 저장소 루트를 VS Code로 엽니다.
 2. `Run and Debug`에서 `Run MLX Studio Extension`을 선택합니다.
 3. `F5`를 누릅니다.
 4. Extension Host 창에서 `MLX Studio: Open Chat Panel`을 실행합니다.
+
+### 패키징과 첫 실행 검증
+
+패키징된 macOS 앱은 MLX 쪽 Python 의존성을 앱 내부 `backend/wheelhouse`에 같이 담아,
+첫 실행 시 외부 패키지 인덱스에 붙지 않도록 설계되어 있습니다.
+
+빌드:
+
+```bash
+./scripts/package_macos_app.sh
+```
+
+기본값으로 `macOS 15` 호환 MLX wheel bundle을 포함합니다. 다른 타깃을 원하면:
+
+```bash
+MLX_STUDIO_TARGET_MACOS_MAJOR=26 ./scripts/package_macos_app.sh
+```
+
+빈 환경에서 첫 실행 bootstrap 재현:
+
+```bash
+./scripts/test_packaged_bootstrap.sh
+```
+
+기본 패키지는 MLX 런타임 중심이며, `llama-cpp-python` 기반 GGUF 번들은
+플랫폼 빌드 이슈 때문에 선택 옵션으로 분리되어 있습니다.
 
 ### 주요 명령
 

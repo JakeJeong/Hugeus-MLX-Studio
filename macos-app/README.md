@@ -30,4 +30,30 @@ The prototype expects to live inside this repository so it can find:
 - `scripts/ui.sh`
 - `backend/server.py`
 
-For now it is intentionally a dev-oriented prototype shell that proves the app structure before packaging into a standalone `.app`.
+Package a shareable `.app` bundle from the repository root:
+
+```bash
+./scripts/package_macos_app.sh
+```
+
+This creates:
+
+- `dist/MLX Studio.app`
+
+The bundle carries the MLX Studio backend/frontend/scripts inside
+`Contents/Resources/MLXStudioRuntime`. On launch, the native shell mirrors
+those runtime sources into `~/Library/Application Support/MLX Studio/Runtime`
+so the local `.venv` and settings stay writable.
+
+Current packaging caveat:
+
+- the packaged app still expects Python 3.10-3.13 to be available on the target Mac for first-run bootstrap
+- MLX Python packages are bundled into an offline `backend/wheelhouse`, so first-run install should not need external package indexes
+- the packaged MLX bundle defaults to macOS 15-compatible wheels; override with `MLX_STUDIO_TARGET_MACOS_MAJOR=<major>` if you need a newer platform target
+- GGUF / `llama-cpp-python` bundling remains an optional follow-up path
+
+Verify the packaged runtime in a clean sandbox:
+
+```bash
+./scripts/test_packaged_bootstrap.sh
+```

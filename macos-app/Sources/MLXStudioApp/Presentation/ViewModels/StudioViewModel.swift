@@ -36,6 +36,7 @@ final class StudioViewModel: ObservableObject {
     }
     @Published var hasUnsavedGenerationChanges = false
     @Published var requestStateText = "Idle"
+    @Published var runtimeBootstrapDetail = ""
 
     private let preferencesStore: StudioPreferencesStore
     private let connectToStudio: ConnectToStudioUseCase
@@ -209,9 +210,11 @@ final class StudioViewModel: ObservableObject {
 
             banner = BannerState(kind: .error, message: "The backend did not become ready in time.")
             requestStateText = "Server start timed out"
+            runtimeBootstrapDetail = ""
         } catch {
             banner = BannerState(kind: .error, message: error.localizedDescription)
             requestStateText = "Failed to start server"
+            runtimeBootstrapDetail = ""
         }
     }
 
@@ -225,6 +228,7 @@ final class StudioViewModel: ObservableObject {
             status = nil
             activity = nil
             requestStateText = "Server stopped"
+            runtimeBootstrapDetail = ""
             banner = BannerState(
                 kind: .info,
                 message: wasManaged ? "Managed backend stopped." : "Connected server stopped."
@@ -232,6 +236,7 @@ final class StudioViewModel: ObservableObject {
         } catch {
             banner = BannerState(kind: .error, message: error.localizedDescription)
             requestStateText = "Failed to stop server"
+            runtimeBootstrapDetail = ""
         }
     }
 
@@ -590,6 +595,9 @@ final class StudioViewModel: ObservableObject {
         if isSending {
             return requestStateText
         }
+        if isBootstrappingRuntime {
+            return requestStateText
+        }
         if managedServerRunning {
             return "Managed server active"
         }
@@ -600,6 +608,18 @@ final class StudioViewModel: ObservableObject {
             return "Connected to existing server"
         }
         return "Offline"
+    }
+
+    var runtimeBootstrapTitle: String {
+        requestStateText == "Idle" || requestStateText == "Offline" ? "Starting local runtime..." : requestStateText
+    }
+
+    var shouldShowRuntimeBootstrapOverlay: Bool {
+        isBootstrappingRuntime
+    }
+
+    private var isBootstrappingRuntime: Bool {
+        shouldAutoManageLocalRuntime && !isConnected && (isStartingManagedRuntime || managedServerRunning || !runtimeBootstrapDetail.isEmpty)
     }
 
     var serverControlLabel: String {
@@ -644,6 +664,8 @@ final class StudioViewModel: ObservableObject {
         } else {
             logText += "\n" + line
         }
+
+        syncRuntimeBootstrapProgress(from: line)
     }
 
     // Runtime payloads sometimes return an absolute filesystem path. The app
@@ -797,6 +819,49 @@ final class StudioViewModel: ObservableObject {
         hasUnsavedGenerationChanges = generationSettings != syncedGenerationSettings
     }
 
+    private func syncRuntimeBootstrapProgress(from line: String) {
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return
+        }
+
+        if trimmed.contains("Creating project virtualenv") {
+            requestStateText = "Creating Python environment..."
+            runtimeBootstrapDetail = "Preparing the local virtualenv for MLX Studio."
+            return
+        }
+
+        if trimmed.contains("Installing Python dependencies") {
+            requestStateText = "Installing Python dependencies..."
+            runtimeBootstrapDetail = "First launch can take a while because MLX Studio is installing backend packages."
+            return
+        }
+
+        if trimmed.hasPrefix("Collecting ") || trimmed.hasPrefix("Downloading ") || trimmed.hasPrefix("Using cached ") {
+            requestStateText = "Installing Python dependencies..."
+            runtimeBootstrapDetail = "Downloading and preparing Python packages..."
+            return
+        }
+
+        if trimmed.contains("Successfully installed") {
+            requestStateText = "Finalizing Python dependencies..."
+            runtimeBootstrapDetail = "Finishing the first-run environment setup."
+            return
+        }
+
+        if trimmed.contains("Started server process") {
+            requestStateText = "Starting API server..."
+            runtimeBootstrapDetail = "Launching the local backend process."
+            return
+        }
+
+        if trimmed.contains("Application startup complete") || trimmed.contains("Uvicorn running on") {
+            requestStateText = "Connecting..."
+            runtimeBootstrapDetail = "Loading local models, settings, and runtime status."
+            return
+        }
+    }
+
     private func syncHubProviderSelection(from payload: StudioStatus?) {
         selectedHubProvider = ModelHubProvider(providerName: payload?.network?.hubProvider)
     }
@@ -853,6 +918,7 @@ final class StudioViewModel: ObservableObject {
             applyStatus(statusPayload)
             activity = activityPayload
             managedServerRunning = runtimeController.isRunning
+            runtimeBootstrapDetail = ""
             if !hasHydratedConnectedSnapshot {
                 await refreshAll(showBanner: false)
             }
@@ -865,6 +931,9 @@ final class StudioViewModel: ObservableObject {
             activity = nil
             hasHydratedConnectedSnapshot = false
             managedServerRunning = runtimeController.isRunning
+            if !managedServerRunning {
+                runtimeBootstrapDetail = ""
+            }
             if allowRecovery {
                 scheduleRuntimeRecoveryIfNeeded()
             }
