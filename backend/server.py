@@ -3,7 +3,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from pathlib import Path
+import signal
+import threading
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.exceptions import RequestValidationError
@@ -65,6 +68,10 @@ class ModelLibraryPathRequest(BaseModel):
 class NetworkCertificateTextRequest(BaseModel):
     filename: str | None = None
     content: str = Field(min_length=1)
+
+
+class HubEndpointRequest(BaseModel):
+    endpoint: str = Field(min_length=1)
 
 
 class SettingsRequest(BaseModel):
@@ -179,6 +186,17 @@ def switch_runtime(payload: RuntimeSelectRequest) -> dict[str, object]:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.post("/api/runtime/shutdown")
+def shutdown_runtime() -> dict[str, str]:
+    logger.info("Shutdown requested by client")
+
+    def terminate_process() -> None:
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    threading.Timer(0.2, terminate_process).start()
+    return {"status": "shutting_down"}
+
+
 @app.post("/api/models/select")
 def select_model(payload: ModelSelectRequest) -> dict[str, object]:
     try:
@@ -261,6 +279,11 @@ def upload_network_certificate_text(payload: NetworkCertificateTextRequest) -> d
 @app.post("/api/network/certificate/clear")
 def clear_network_certificate() -> dict[str, object]:
     return state.clear_tls_certificate()
+
+
+@app.post("/api/network/hub-endpoint")
+def set_network_hub_endpoint(payload: HubEndpointRequest) -> dict[str, object]:
+    return state.set_hub_endpoint(payload.endpoint)
 
 
 @app.post("/api/settings")

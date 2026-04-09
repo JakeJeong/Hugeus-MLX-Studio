@@ -9,6 +9,8 @@ PROMPTS_DIR = ROOT_DIR / "benchmark" / "prompts"
 RESULTS_DIR = ROOT_DIR / "benchmark" / "results"
 FRONTEND_DIR = ROOT_DIR / "frontend"
 TLS_CERT_DIR = ROOT_DIR / ".mlx-studio-certs"
+HUGGING_FACE_ENDPOINT = "https://huggingface.co"
+HF_MIRROR_ENDPOINT = "https://hf-mirror.com"
 
 DEFAULT_MODEL = "mlx-community/Qwen2.5-7B-Instruct-4bit"
 DEFAULT_RUNTIME = "mlx"

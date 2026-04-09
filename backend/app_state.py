@@ -44,6 +44,10 @@ class AppState:
         self._runtime: Runtime = build_runtime(defaults.runtime, defaults.model_id)
         self._lock = threading.RLock()
         self._model_store = ModelStore()
+        persisted_hub_endpoint = str(persisted.get("hub_endpoint") or "").strip() or None
+        if persisted_hub_endpoint is not None:
+            self._model_store.configure_hub_endpoint(persisted_hub_endpoint)
+        self._hub_endpoint = str(self._model_store.tls_status()["hub_endpoint"])
         self._custom_model_library_paths = self._resolve_saved_directory_paths(persisted.get("custom_model_library_paths"))
         self._model_store.configure_additional_model_roots(self._custom_model_library_paths)
         self._tls_cert_dir = defaults.frontend_dir.parent / ".mlx-studio-certs"
@@ -368,6 +372,8 @@ class AppState:
             "custom_ca_bundle_name": self._custom_tls_bundle_name,
             "source": tls_status["source"],
             "effective_ca_bundle_path": tls_status["effective_ca_bundle_path"],
+            "hub_endpoint": tls_status["hub_endpoint"],
+            "hub_provider": tls_status["hub_provider"],
         }
 
     def library_status(self) -> dict[str, object]:
@@ -445,6 +451,13 @@ class AppState:
         self._persist_settings()
         return self.status()
 
+    def set_hub_endpoint(self, endpoint: str | None) -> dict[str, object]:
+        self._hub_endpoint = str(endpoint or "").strip() or None
+        self._model_store.configure_hub_endpoint(self._hub_endpoint)
+        self._hub_endpoint = str(self._model_store.tls_status()["hub_endpoint"])
+        self._persist_settings()
+        return self.status()
+
     def add_model_library_path(self, directory: str) -> dict[str, object]:
         normalized = self._normalize_directory_path(directory, require_exists=True)
         if normalized in self._custom_model_library_paths:
@@ -481,6 +494,7 @@ class AppState:
                 "custom_model_library_paths": self._custom_model_library_paths,
                 "tls_custom_ca_bundle_path": self._custom_tls_bundle_path,
                 "tls_custom_ca_bundle_name": self._custom_tls_bundle_name,
+                "hub_endpoint": self._model_store.tls_status()["hub_endpoint"],
             }
         )
 

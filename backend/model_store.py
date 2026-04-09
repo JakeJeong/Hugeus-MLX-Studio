@@ -9,7 +9,7 @@ import httpx
 from huggingface_hub import HfApi, snapshot_download
 from huggingface_hub.constants import HF_HUB_CACHE
 
-from backend.config import TLS_CERT_DIR
+from backend.config import HF_MIRROR_ENDPOINT, HUGGING_FACE_ENDPOINT, TLS_CERT_DIR
 
 
 MODEL_ALLOW_PATTERNS = [
@@ -42,11 +42,14 @@ class ModelStore:
         self._additional_model_roots: list[str] = []
         self._initial_ssl_cert_file = os.environ.get("SSL_CERT_FILE")
         self._initial_requests_ca_bundle = os.environ.get("REQUESTS_CA_BUNDLE")
+        self._initial_hf_endpoint = os.environ.get("HF_ENDPOINT")
         self._custom_ca_bundle_path: str | None = None
         self._effective_ca_bundle_path: str | None = None
         self._ca_bundle_source = "default"
         self._generated_ca_bundle_path = TLS_CERT_DIR / "effective-ca-bundle.pem"
+        self._hub_endpoint = self._normalize_hub_endpoint(self._initial_hf_endpoint)
         self.configure_tls_certificate_bundle(None)
+        self.configure_hub_endpoint(self._hub_endpoint)
 
     def list_local_models(self) -> list[dict[str, object]]:
         models: list[dict[str, object]] = []
@@ -242,7 +245,11 @@ class ModelStore:
         else:
             allow_patterns = GGUF_ALLOW_PATTERNS
         try:
-            path = snapshot_download(model_id, allow_patterns=allow_patterns)
+            path = snapshot_download(
+                model_id,
+                allow_patterns=allow_patterns,
+                endpoint=self._hub_endpoint,
+            )
         except Exception as exc:  # noqa: BLE001 - normalize network and TLS failures
             raise RuntimeError(self._format_hub_error(exc, action=f"download {model_id}")) from exc
         return {
@@ -270,11 +277,18 @@ class ModelStore:
         self._apply_ca_environment(self._effective_ca_bundle_path)
         self._configure_hub_http_client()
 
+    def configure_hub_endpoint(self, endpoint: str | None) -> None:
+        self._hub_endpoint = self._normalize_hub_endpoint(endpoint)
+        self._apply_hub_environment(self._hub_endpoint)
+        self._configure_hub_http_client()
+
     def tls_status(self) -> dict[str, object]:
         return {
             "source": self._ca_bundle_source,
             "custom_ca_bundle_path": self._custom_ca_bundle_path,
             "effective_ca_bundle_path": self._effective_ca_bundle_path,
+            "hub_endpoint": self._hub_endpoint,
+            "hub_provider": self._hub_provider_name(self._hub_endpoint),
         }
 
     def delete_model(self, model_id: str) -> None:
@@ -558,6 +572,16 @@ class ModelStore:
         else:
             os.environ.pop("REQUESTS_CA_BUNDLE", None)
 
+    def _apply_hub_environment(self, endpoint: str | None) -> None:
+        if endpoint:
+            os.environ["HF_ENDPOINT"] = endpoint
+            return
+
+        if self._initial_hf_endpoint is not None:
+            os.environ["HF_ENDPOINT"] = self._initial_hf_endpoint
+        else:
+            os.environ.pop("HF_ENDPOINT", None)
+
     def _configure_hub_http_client(self) -> None:
         verify: bool | str = self._effective_ca_bundle_path or True
         try:
@@ -587,7 +611,23 @@ class ModelStore:
             except Exception:
                 pass
 
-        self.api = HfApi()
+        self.api = HfApi(endpoint=self._hub_endpoint)
+
+    def _normalize_hub_endpoint(self, endpoint: str | None) -> str:
+        value = str(endpoint or "").strip()
+        if not value:
+            return HUGGING_FACE_ENDPOINT
+        if value in {"huggingface", "official"}:
+            return HUGGING_FACE_ENDPOINT
+        if value in {"hf-mirror", "mirror"}:
+            return HF_MIRROR_ENDPOINT
+        return value.rstrip("/")
+
+    def _hub_provider_name(self, endpoint: str | None) -> str:
+        normalized = self._normalize_hub_endpoint(endpoint)
+        if normalized == HF_MIRROR_ENDPOINT:
+            return "hf-mirror"
+        return "huggingface"
 
     def _format_hub_error(self, exc: Exception, action: str) -> str:
         message = str(exc).strip() or exc.__class__.__name__
