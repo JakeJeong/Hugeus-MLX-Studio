@@ -692,6 +692,18 @@ class MlxRuntime:
         cache_match = self._resolve_prompt_cache(prompt_tokens_list, session_id=session_id)
         prompt_input: list[int] = cache_match.remaining_tokens
         active_prompt_cache = cache_match.prompt_cache
+        effective_cached_tokens = cache_match.cached_tokens
+
+        # Recent mlx_lm builds reject generation when the entire prompt is
+        # already covered by a prompt cache and no fresh prompt tokens remain.
+        # Feed the final prompt token again and trim one token from the cache so
+        # the model still sees the same effective prompt while satisfying the
+        # generator contract.
+        if not prompt_input and active_prompt_cache is not None and prompt_tokens_list:
+            prompt_input = [prompt_tokens_list[-1]]
+            self._trim_prompt_cache(active_prompt_cache, 1)
+            effective_cached_tokens = max(effective_cached_tokens - 1, 0)
+
         self._reset_peak_memory()
 
         start = time.perf_counter()
@@ -768,7 +780,7 @@ class MlxRuntime:
                     "badge": "Responding",
                 }
             if prompt_tokens is None:
-                prompt_tokens = response.prompt_tokens + cache_match.cached_tokens
+                prompt_tokens = response.prompt_tokens + effective_cached_tokens
             if response.generation_tokens is not None:
                 completion_tokens = response.generation_tokens
                 if response.generation_tokens > last_generation_count:

@@ -39,6 +39,11 @@ class AppState:
             "llama_cpp": "",
             "mock": defaults.model_id,
         }
+        self._runtime_targets: dict[str, str] = {
+            "mlx": defaults.model_id,
+            "llama_cpp": "",
+            "mock": defaults.model_id,
+        }
         self._settings_store = SettingsStore()
         persisted = self._settings_store.load()
         self._runtime: Runtime = build_runtime(defaults.runtime, defaults.model_id)
@@ -125,9 +130,11 @@ class AppState:
                 self._runtime_models[runtime_name] = model_id
 
             next_model = self._runtime_models.get(runtime_name, "")
+            next_target = self._resolve_runtime_model_target(runtime_name, next_model)
             self._runtime.unload()
             self._runtime_name = runtime_name
-            self._runtime = build_runtime(runtime_name, next_model)
+            self._runtime_targets[runtime_name] = next_target
+            self._runtime = build_runtime(runtime_name, next_target)
             self._settings.model_id = next_model
             return self.status()
 
@@ -140,8 +147,10 @@ class AppState:
 
             previous_runtime = self._runtime
             previous_model_id = self._settings.model_id
-            runtime_changed = model_id != previous_model_id
-            candidate_runtime = previous_runtime if not runtime_changed else build_runtime(self._runtime_name, model_id)
+            previous_runtime_target = self._runtime_targets.get(self._runtime_name, previous_runtime.current_model())
+            resolved_target = self._resolve_runtime_model_target(self._runtime_name, model_id)
+            runtime_changed = model_id != previous_model_id or resolved_target != previous_runtime_target
+            candidate_runtime = previous_runtime if not runtime_changed else build_runtime(self._runtime_name, resolved_target)
 
             try:
                 if runtime_changed:
@@ -153,12 +162,14 @@ class AppState:
                     self._runtime = previous_runtime
                     self._settings.model_id = previous_model_id
                     self._runtime_models[self._runtime_name] = previous_model_id
+                    self._runtime_targets[self._runtime_name] = previous_runtime_target
                 raise ValueError(self._format_model_error(model_id, exc)) from exc
 
             if runtime_changed:
                 self._runtime = candidate_runtime
                 self._settings.model_id = model_id
                 self._runtime_models[self._runtime_name] = model_id
+                self._runtime_targets[self._runtime_name] = resolved_target
 
             return self.status()
 
@@ -607,6 +618,11 @@ class AppState:
                 **self._download_status,
                 **updates,
             }
+
+    def _resolve_runtime_model_target(self, runtime_name: str, model_id: str) -> str:
+        if runtime_name == "mlx" and model_id:
+            return self._model_store.mlx_runtime_target(model_id)
+        return model_id
 
     def _format_model_error(self, model_id: str, exc: Exception) -> str:
         raw = str(exc).strip()

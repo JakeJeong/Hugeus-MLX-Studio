@@ -344,6 +344,18 @@ class ModelStore:
             return False, "No MLX safetensors found in the cached snapshot."
         return self._validate_mlx_snapshot(snapshot_dir)
 
+    def mlx_runtime_target(self, model_id: str) -> str:
+        direct_path = Path(model_id).expanduser()
+        if direct_path.exists() and direct_path.is_dir():
+            return str(direct_path)
+
+        cache_dir = self.cache_root / self._cache_folder_name(model_id)
+        snapshot_dir = self._latest_snapshot_dir(cache_dir)
+        if snapshot_dir is not None and self._snapshot_has_mlx_weights(cache_dir):
+            return str(snapshot_dir)
+
+        return model_id
+
     def gguf_exists(self, model_path: str) -> bool:
         candidate = Path(model_path).expanduser()
         return candidate.exists() and candidate.is_file() and candidate.suffix.lower() == ".gguf"

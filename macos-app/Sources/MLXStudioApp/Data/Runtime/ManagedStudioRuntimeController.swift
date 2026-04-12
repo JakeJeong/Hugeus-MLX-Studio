@@ -41,6 +41,7 @@ final class ManagedStudioRuntimeController: ManagedRuntimeControlling, @unchecke
         }
 
         let rootURL = try resolveRuntimeRoot()
+        emitBundledRuntimeDiagnostics(from: rootURL)
         let process = Process()
         process.currentDirectoryURL = rootURL
         process.executableURL = rootURL.appendingPathComponent("scripts/ui.sh")
@@ -149,6 +150,60 @@ final class ManagedStudioRuntimeController: ManagedRuntimeControlling, @unchecke
 
     private func emit(_ line: String) {
         logHandler?(line)
+    }
+
+    private func emitBundledRuntimeDiagnostics(from runtimeRoot: URL) {
+        let fileManager = FileManager.default
+        let wheelhouseURL = runtimeRoot.appendingPathComponent("backend/wheelhouse", isDirectory: true)
+
+        guard fileManager.fileExists(atPath: wheelhouseURL.path) else {
+            return
+        }
+
+        let pythonMinor = readTrimmedFile(at: wheelhouseURL.appendingPathComponent(".python-minor"))
+        let platformMajor = readTrimmedFile(at: wheelhouseURL.appendingPathComponent(".macos-platform-major"))
+        let mlxWheel = firstWheelName(matching: "mlx-", in: wheelhouseURL)
+        let metalWheel = firstWheelName(matching: "mlx_metal-", in: wheelhouseURL)
+
+        var parts: [String] = ["Using packaged dependency bundle"]
+        if let pythonMinor, !pythonMinor.isEmpty {
+            parts.append("Python 3.\(pythonMinor)")
+        }
+        if let platformMajor, !platformMajor.isEmpty {
+            parts.append("macOS \(platformMajor).x target")
+        }
+        emit(parts.joined(separator: " · "))
+
+        if let mlxWheel {
+            emit("Packaged MLX wheel: \(mlxWheel)")
+        }
+        if let metalWheel {
+            emit("Packaged MLX Metal wheel: \(metalWheel)")
+        }
+    }
+
+    private func readTrimmedFile(at url: URL) -> String? {
+        guard let content = try? String(contentsOf: url, encoding: .utf8) else {
+            return nil
+        }
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func firstWheelName(matching prefix: String, in directory: URL) -> String? {
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) else {
+            return nil
+        }
+
+        return entries
+            .map(\.lastPathComponent)
+            .filter { $0.hasPrefix(prefix) && $0.hasSuffix(".whl") }
+            .sorted()
+            .first
     }
 
     private func listeningPIDs(on port: Int) throws -> [String] {
