@@ -12,6 +12,7 @@ BUILD_DIR="$ROOT_DIR/macos-app/.build/release"
 RESOURCES_DIR="$APP_DIR/Contents/Resources"
 MACOS_DIR="$APP_DIR/Contents/MacOS"
 RUNTIME_DIR="$RESOURCES_DIR/MLXStudioRuntime"
+APP_ICON_PATH="$ROOT_DIR/macos-app/Assets/AppIcon.icns"
 MODULE_CACHE_DIR="$ROOT_DIR/macos-app/.build/ModuleCache.noindex"
 XDG_CACHE_DIR="$ROOT_DIR/macos-app/.build/xdg-cache"
 INCLUDE_OFFLINE_BUNDLE="${MLX_STUDIO_SKIP_WHEELHOUSE_BUILD:-0}"
@@ -19,6 +20,8 @@ INCLUDE_OFFLINE_BUNDLE="${MLX_STUDIO_SKIP_WHEELHOUSE_BUILD:-0}"
 if [ "$INCLUDE_OFFLINE_BUNDLE" != "1" ]; then
   "$ROOT_DIR/scripts/build_offline_wheelhouse.sh"
 fi
+
+"$ROOT_DIR/scripts/build_app_icon.sh"
 
 if [ -d "$APP_DIR" ]; then
   mv "$APP_DIR" "$DIST_DIR/$APP_NAME-$BACKUP_SUFFIX.app"
@@ -36,6 +39,7 @@ swift build --package-path "$ROOT_DIR/macos-app" -c release
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 cp "$BUILD_DIR/$EXECUTABLE_NAME" "$MACOS_DIR/$EXECUTABLE_NAME"
 chmod +x "$MACOS_DIR/$EXECUTABLE_NAME"
+cp "$APP_ICON_PATH" "$RESOURCES_DIR/AppIcon.icns"
 
 cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -46,6 +50,8 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
   <string>en</string>
   <key>CFBundleExecutable</key>
   <string>MLXStudioApp</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
   <key>CFBundleIdentifier</key>
   <string>com.hugeus.mlxstudio</string>
   <key>CFBundleInfoDictionaryVersion</key>

@@ -1,5 +1,5 @@
-git+https://github.com/ml-explore/mlx-lm.git@dcbf6e33d135a1b7c6767ca0fe7ebbd23df814a7
-git+https://github.com/huggingface/transformers.git@52cb0653b48fcb0737a74546911df77034b61732
+git+https://github.com/ml-explore/mlx-lm.git@2c008fd0252b2c569227d12568356ab88ab0560a
+git+https://github.com/huggingface/transformers.git@1048e9af78a6045444244412dfe216ba5810e7fb
 llama-cpp-python
 fastapi
 uvicorn[standard]
